@@ -34,8 +34,7 @@ struct InputQueue(VecDeque<Direction>);
 
 struct Apples {
     list: HashMap<IVec2, Entity>,
-    mesh: Option<Handle<Mesh>>,
-    material: Option<Handle<ColorMaterial>>,
+    sprite: Option<Handle<Image>>,
 }
 
 fn main() {
@@ -51,8 +50,7 @@ fn main() {
         .insert_resource(InputQueue(VecDeque::new()))
         .insert_resource(Apples {
             list: HashMap::new(),
-            mesh: None,
-            material: None,
+            sprite: None,
         })
         .add_system(bevy::input::system::exit_on_esc_system)
         .add_startup_system(scene_setup)
@@ -65,14 +63,14 @@ fn spawn_apple(pos: IVec2, apples: &mut Apples, commands: &mut Commands, b: &Boa
     apples.list.insert(
         pos,
         commands
-            .spawn_bundle(MaterialMesh2dBundle {
-                mesh: apples.mesh.as_ref().unwrap().clone_weak().into(),
+            .spawn_bundle(SpriteBundle {
+                texture: apples.sprite.as_ref().unwrap().clone(),
                 transform: Transform::from_xyz(
                     pos.x as f32 - b.width as f32 / 2.0 + 0.5,
                     pos.y as f32 - b.height as f32 / 2.0 + 0.5,
                     5.0,
-                ),
-                material: apples.material.as_ref().unwrap().clone_weak(),
+                )
+                .with_scale(Vec3::splat(1.0 / 512.0)),
                 ..default()
             })
             .id(),
@@ -85,13 +83,9 @@ fn scene_setup(
     mut apples: ResMut<Apples>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    assets: Res<AssetServer>,
 ) {
-    apples.material = Some(materials.add(ColorMaterial::from(Color::rgb(0.9, 0.1, 0.0))));
-    apples.mesh = Some(
-        meshes
-            .add(Mesh::from(shape::Quad::new(Vec2::new(0.8, 0.8))))
-            .into(),
-    );
+    apples.sprite = Some(assets.load("images/apple.png"));
 
     spawn_apple(IVec2::new(8, 7), &mut apples, &mut commands, &b);
     spawn_apple(IVec2::new(10, 7), &mut apples, &mut commands, &b);
@@ -176,6 +170,7 @@ fn snake_system(
     keys: Res<Input<KeyCode>>,
     mut input_queue: ResMut<InputQueue>,
     mut apples: ResMut<Apples>,
+    b: Res<Board>,
 ) {
     if input_queue.0.len() < 3 {
         if keys.just_pressed(KeyCode::Up) || keys.just_pressed(KeyCode::W) {
@@ -224,9 +219,26 @@ fn snake_system(
             snake.body.insert(0, head + head - neck);
         }
 
+        let new_head = snake.body[0];
+        if new_head.x < 0 || new_head.x >= b.width {
+            end_game();
+        }
+        if new_head.y < 0 || new_head.y >= b.height {
+            end_game();
+        }
+        for snake_body in snake.body.iter().skip(1) {
+            if *snake_body == new_head {
+                end_game();
+            }
+        }
+
         let mesh = mesh_snake(&snake);
         *mesh_handle = meshes.add(mesh).into();
     }
+}
+
+fn end_game() {
+    println!("DEEEAAAAATTHHHHH!!!!");
 }
 
 fn mesh_snake(snake: &Snake) -> Mesh {
