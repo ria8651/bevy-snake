@@ -3,6 +3,7 @@ use bevy::{
     render::{camera::ScalingMode, mesh::PrimitiveTopology},
     sprite::{MaterialMesh2dBundle, Mesh2dHandle},
 };
+use std::collections::VecDeque;
 
 #[derive(Component)]
 struct Snake {
@@ -18,6 +19,18 @@ struct Board {
 
 struct MovmentTimer(Timer);
 
+#[derive(PartialEq)]
+enum Direction {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+const DIR: [[i32; 2]; 4] = [[0, 1], [0, -1], [-1, 0], [1, 0]];
+
+struct InputQueue(VecDeque<Direction>);
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
@@ -28,6 +41,7 @@ fn main() {
             colour2: Color::rgb(0.2, 0.2, 0.2),
         })
         .insert_resource(MovmentTimer(Timer::from_seconds(0.2, true)))
+        .insert_resource(InputQueue(VecDeque::new()))
         .add_system(bevy::input::system::exit_on_esc_system)
         .add_startup_system(scene_setup)
         .add_startup_system(snake_setup)
@@ -111,14 +125,50 @@ fn snake_system(
     mut meshes: ResMut<Assets<Mesh>>,
     time: Res<Time>,
     mut timer: ResMut<MovmentTimer>,
+    keys: Res<Input<KeyCode>>,
+    mut input_queue: ResMut<InputQueue>,
 ) {
+    if input_queue.0.len() < 3 {
+        if keys.just_pressed(KeyCode::Up) || keys.just_pressed(KeyCode::W) {
+            // if input_queue.0[0] != Direction::Down {
+            input_queue.0.push_back(Direction::Up);
+            // }
+        } else if keys.just_pressed(KeyCode::Down) || keys.just_pressed(KeyCode::S) {
+            // if input_queue.0[0] != Direction::Up {
+            input_queue.0.push_back(Direction::Down);
+            // }
+        } else if keys.just_pressed(KeyCode::Left) || keys.just_pressed(KeyCode::A) {
+            // if input_queue.0[0] != Direction::Right {
+            input_queue.0.push_back(Direction::Left);
+            // }
+        } else if keys.just_pressed(KeyCode::Right) || keys.just_pressed(KeyCode::D) {
+            // if input_queue.0[0] != Direction::Left {
+            input_queue.0.push_back(Direction::Right);
+            // }
+        }
+    }
+
     if timer.0.tick(time.delta()).just_finished() {
         let (mut snake, mut mesh_handle) = snake.single_mut();
+
         let head = snake.body[0];
         let neck = snake.body[1];
         let len = snake.body.len();
+        let current_dir = head - neck;
+
         snake.body.remove(len - 1);
-        snake.body.insert(0, head + head - neck);
+        if let Some(direction) = input_queue.0.pop_front() {
+            let dir = DIR[direction as usize];
+            let dir = IVec2::new(dir[0], dir[1]);
+            
+            if current_dir + dir != IVec2::ZERO {
+                snake.body.insert(0, head + dir);
+            } else {
+                snake.body.insert(0, head + head - neck);
+            }
+        } else {
+            snake.body.insert(0, head + head - neck);
+        }
 
         let mesh = mesh_snake(&snake);
         *mesh_handle = meshes.add(mesh).into();
