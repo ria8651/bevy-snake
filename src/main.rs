@@ -1,9 +1,10 @@
 use bevy::{
+    pbr::Material,
     prelude::*,
     render::{camera::ScalingMode, mesh::PrimitiveTopology},
     sprite::{MaterialMesh2dBundle, Mesh2dHandle},
 };
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 #[derive(Component)]
 struct Snake {
@@ -31,6 +32,12 @@ const DIR: [[i32; 2]; 4] = [[0, 1], [0, -1], [-1, 0], [1, 0]];
 
 struct InputQueue(VecDeque<Direction>);
 
+struct Apples {
+    list: HashMap<IVec2, Entity>,
+    mesh: Option<Handle<Mesh>>,
+    material: Option<Handle<ColorMaterial>>,
+}
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
@@ -42,6 +49,11 @@ fn main() {
         })
         .insert_resource(MovmentTimer(Timer::from_seconds(0.2, true)))
         .insert_resource(InputQueue(VecDeque::new()))
+        .insert_resource(Apples {
+            list: HashMap::new(),
+            mesh: None,
+            material: None,
+        })
         .add_system(bevy::input::system::exit_on_esc_system)
         .add_startup_system(scene_setup)
         .add_startup_system(snake_setup)
@@ -49,7 +61,42 @@ fn main() {
         .run();
 }
 
-fn scene_setup(mut commands: Commands, b: Res<Board>) {
+fn spawn_apple(pos: IVec2, apples: &mut Apples, commands: &mut Commands, b: &Board) {
+    apples.list.insert(
+        pos,
+        commands
+            .spawn_bundle(MaterialMesh2dBundle {
+                mesh: apples.mesh.as_ref().unwrap().clone_weak().into(),
+                transform: Transform::from_xyz(
+                    pos.x as f32 - b.width as f32 / 2.0 + 0.5,
+                    pos.y as f32 - b.height as f32 / 2.0 + 0.5,
+                    5.0,
+                ),
+                material: apples.material.as_ref().unwrap().clone_weak(),
+                ..default()
+            })
+            .id(),
+    );
+}
+
+fn scene_setup(
+    mut commands: Commands,
+    b: Res<Board>,
+    mut apples: ResMut<Apples>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    apples.material = Some(materials.add(ColorMaterial::from(Color::rgb(0.9, 0.1, 0.0))));
+    apples.mesh = Some(
+        meshes
+            .add(Mesh::from(shape::Quad::new(Vec2::new(0.8, 0.8))))
+            .into(),
+    );
+
+    spawn_apple(IVec2::new(8, 7), &mut apples, &mut commands, &b);
+    spawn_apple(IVec2::new(10, 7), &mut apples, &mut commands, &b);
+    spawn_apple(IVec2::new(8, 9), &mut apples, &mut commands, &b);
+
     commands.spawn_bundle(OrthographicCameraBundle {
         orthographic_projection: OrthographicProjection {
             scaling_mode: ScalingMode::FixedVertical,
@@ -121,12 +168,14 @@ fn snake_setup(
 }
 
 fn snake_system(
+    mut commands: Commands,
     mut snake: Query<(&mut Snake, &mut Mesh2dHandle)>,
     mut meshes: ResMut<Assets<Mesh>>,
     time: Res<Time>,
     mut timer: ResMut<MovmentTimer>,
     keys: Res<Input<KeyCode>>,
     mut input_queue: ResMut<InputQueue>,
+    mut apples: ResMut<Apples>,
 ) {
     if input_queue.0.len() < 3 {
         if keys.just_pressed(KeyCode::Up) || keys.just_pressed(KeyCode::W) {
@@ -156,11 +205,16 @@ fn snake_system(
         let len = snake.body.len();
         let current_dir = head - neck;
 
-        snake.body.remove(len - 1);
+        if let Some(apple_entity) = apples.list.get(&head) {
+            commands.entity(*apple_entity).despawn();
+            apples.list.remove(&head);
+        } else {
+            snake.body.remove(len - 1);
+        }
+
         if let Some(direction) = input_queue.0.pop_front() {
             let dir = DIR[direction as usize];
             let dir = IVec2::new(dir[0], dir[1]);
-            
             if current_dir + dir != IVec2::ZERO {
                 snake.body.insert(0, head + dir);
             } else {
