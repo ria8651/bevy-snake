@@ -4,6 +4,7 @@ use bevy::{
     render::{camera::ScalingMode, mesh::PrimitiveTopology},
     sprite::{MaterialMesh2dBundle, Mesh2dHandle},
 };
+use rand::Rng;
 use std::collections::{HashMap, VecDeque};
 
 #[derive(Component)]
@@ -46,7 +47,7 @@ fn main() {
             colour1: Color::rgb(0.3, 0.3, 0.3),
             colour2: Color::rgb(0.2, 0.2, 0.2),
         })
-        .insert_resource(MovmentTimer(Timer::from_seconds(0.2, true)))
+        .insert_resource(MovmentTimer(Timer::from_seconds(0.15, true)))
         .insert_resource(InputQueue(VecDeque::new()))
         .insert_resource(Apples {
             list: HashMap::new(),
@@ -203,6 +204,10 @@ fn snake_system(
         if let Some(apple_entity) = apples.list.get(&head) {
             commands.entity(*apple_entity).despawn();
             apples.list.remove(&head);
+
+            let mut rng = rand::thread_rng();
+            let pos = IVec2::new(rng.gen_range(0..b.width), rng.gen_range(0..b.height));
+            spawn_apple(pos, &mut apples, &mut commands, &b);
         } else {
             snake.body.remove(len - 1);
         }
@@ -246,13 +251,105 @@ fn mesh_snake(snake: &Snake) -> Mesh {
 
     let mut verticies = Vec::new();
 
-    for pos in snake.body.iter() {
-        verticies.push([pos.x as f32 + 0.1, pos.y as f32 + 0.1, 0.0]);
-        verticies.push([pos.x as f32 + 0.9, pos.y as f32 + 0.1, 0.0]);
-        verticies.push([pos.x as f32 + 0.1, pos.y as f32 + 0.9, 0.0]);
-        verticies.push([pos.x as f32 + 0.1, pos.y as f32 + 0.9, 0.0]);
-        verticies.push([pos.x as f32 + 0.9, pos.y as f32 + 0.1, 0.0]);
-        verticies.push([pos.x as f32 + 0.9, pos.y as f32 + 0.9, 0.0]);
+    fn push_quad(
+        verticies: &mut Vec<[f32; 3]>,
+        pos: IVec2,
+        offset: Vec2,
+        half_size: Vec2,
+        flip: IVec2,
+    ) {
+        let offset = if flip.y == 1 {
+            Vec2::new(offset.y, offset.x)
+        } else {
+            offset
+        };
+
+        let half_size = if flip.y == 1 {
+            Vec2::new(half_size.y, half_size.x)
+        } else {
+            half_size
+        };
+        let pos = Vec2::new(pos.x as f32, pos.y as f32) + 0.5 + offset * flip.x as f32;
+
+        verticies.push([pos.x - half_size.x, pos.y - half_size.y, 0.0]);
+        verticies.push([pos.x + half_size.x, pos.y - half_size.y, 0.0]);
+        verticies.push([pos.x - half_size.x, pos.y + half_size.y, 0.0]);
+
+        verticies.push([pos.x - half_size.x, pos.y + half_size.y, 0.0]);
+        verticies.push([pos.x + half_size.x, pos.y - half_size.y, 0.0]);
+        verticies.push([pos.x + half_size.x, pos.y + half_size.y, 0.0]);
+    }
+
+    fn push_circle(verticies: &mut Vec<[f32; 3]>, pos: IVec2, radius: f32) {
+        let pos = Vec2::new(pos.x as f32, pos.y as f32) + 0.5;
+
+        let segments = 64;
+
+        let step = std::f32::consts::TAU / segments as f32;
+        let mut angle = step;
+        let mut last = Vec2::new(0.0, radius);
+        for _ in 0..segments {
+            let x = radius * angle.sin();
+            let y = radius * angle.cos();
+
+            verticies.push([pos.x, pos.y, 0.0]);
+            verticies.push([pos.x + x, pos.y + y, 0.0]);
+            verticies.push([pos.x + last.x, pos.y + last.y, 0.0]);
+
+            angle += step;
+            last = Vec2::new(x, y);
+        }
+    }
+
+    let width = 0.6;
+
+    let mut last = snake.body[0];
+    push_circle(&mut verticies, last, 0.4);
+    for i in 0..snake.body.len() {
+        let pos = snake.body[i];
+
+        push_circle(&mut verticies, pos, width / 2.0);
+        if i != 0 {
+            let flip1 = match (last - pos).to_array() {
+                [0, 1] => IVec2::new(1, 0),
+                [0, -1] => IVec2::new(-1, 0),
+                [1, 0] => IVec2::new(1, 1),
+                [-1, 0] => IVec2::new(-1, 1),
+                _ => IVec2::new(1, 1),
+            };
+
+            push_quad(
+                &mut verticies,
+                pos,
+                Vec2::new(0.0, 0.25),
+                Vec2::new(width / 2.0, 0.25),
+                flip1,
+            );
+        }
+
+        if i != snake.body.len() - 1 {
+            let flip2 = if let Some(next) = snake.body.get(i + 1) {
+                match (*next - pos).to_array() {
+                    [0, 1] => IVec2::new(1, 0),
+                    [0, -1] => IVec2::new(-1, 0),
+                    [1, 0] => IVec2::new(1, 1),
+                    [-1, 0] => IVec2::new(-1, 1),
+                    _ => IVec2::new(1, 1),
+                }
+            } else {
+                IVec2::new(1, 1)
+            };
+            
+            push_quad(
+                &mut verticies,
+                pos,
+                Vec2::new(0.0, 0.25),
+                Vec2::new(width / 2.0, 0.25),
+                flip2,
+            );
+        }
+
+        last = pos;
     }
 
     let mut positions = Vec::<[f32; 3]>::new();
