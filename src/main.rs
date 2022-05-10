@@ -21,7 +21,7 @@ struct Board {
 
 struct MovmentTimer(Timer);
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Copy)]
 enum Direction {
     Up,
     Down,
@@ -47,7 +47,7 @@ fn main() {
             colour1: Color::rgb(0.3, 0.3, 0.3),
             colour2: Color::rgb(0.2, 0.2, 0.2),
         })
-        .insert_resource(MovmentTimer(Timer::from_seconds(0.15, true)))
+        .insert_resource(MovmentTimer(Timer::from_seconds(1.0, true)))
         .insert_resource(InputQueue(VecDeque::new()))
         .insert_resource(Apples {
             list: HashMap::new(),
@@ -150,7 +150,7 @@ fn snake_setup(
         ],
     };
 
-    let mesh = mesh_snake(&snake);
+    let mesh = mesh_snake(&snake, IVec2::new(1, 0), 0.0);
 
     commands
         .spawn_bundle(MaterialMesh2dBundle {
@@ -173,44 +173,35 @@ fn snake_system(
     mut apples: ResMut<Apples>,
     b: Res<Board>,
 ) {
+    let (mut snake, mut mesh_handle) = snake.single_mut();
+
+    let head = snake.body[0];
+    let neck = snake.body[1];
+    let forward = head - neck;
+
+    let last_in_queue = *input_queue.0.back().unwrap_or(&get_direction(forward));
     if input_queue.0.len() < 3 {
         if keys.just_pressed(KeyCode::Up) || keys.just_pressed(KeyCode::W) {
-            // if input_queue.0[0] != Direction::Down {
-            input_queue.0.push_back(Direction::Up);
-            // }
+            if last_in_queue != Direction::Down && last_in_queue != Direction::Up {
+                input_queue.0.push_back(Direction::Up);
+            }
         } else if keys.just_pressed(KeyCode::Down) || keys.just_pressed(KeyCode::S) {
-            // if input_queue.0[0] != Direction::Up {
-            input_queue.0.push_back(Direction::Down);
-            // }
+            if last_in_queue != Direction::Up && last_in_queue != Direction::Down {
+                input_queue.0.push_back(Direction::Down);
+            }
         } else if keys.just_pressed(KeyCode::Left) || keys.just_pressed(KeyCode::A) {
-            // if input_queue.0[0] != Direction::Right {
-            input_queue.0.push_back(Direction::Left);
-            // }
+            if last_in_queue != Direction::Right && last_in_queue != Direction::Left {
+                input_queue.0.push_back(Direction::Left);
+            }
         } else if keys.just_pressed(KeyCode::Right) || keys.just_pressed(KeyCode::D) {
-            // if input_queue.0[0] != Direction::Left {
-            input_queue.0.push_back(Direction::Right);
-            // }
+            if last_in_queue != Direction::Left && last_in_queue != Direction::Right {
+                input_queue.0.push_back(Direction::Right);
+            }
         }
     }
 
     if timer.0.tick(time.delta()).just_finished() {
-        let (mut snake, mut mesh_handle) = snake.single_mut();
-
-        let head = snake.body[0];
-        let neck = snake.body[1];
-        let len = snake.body.len();
         let current_dir = head - neck;
-
-        if let Some(apple_entity) = apples.list.get(&head) {
-            commands.entity(*apple_entity).despawn();
-            apples.list.remove(&head);
-
-            let mut rng = rand::thread_rng();
-            let pos = IVec2::new(rng.gen_range(0..b.width), rng.gen_range(0..b.height));
-            spawn_apple(pos, &mut apples, &mut commands, &b);
-        } else {
-            snake.body.remove(len - 1);
-        }
 
         if let Some(direction) = input_queue.0.pop_front() {
             let dir = DIR[direction as usize];
@@ -237,16 +228,35 @@ fn snake_system(
             }
         }
 
-        let mesh = mesh_snake(&snake);
-        *mesh_handle = meshes.add(mesh).into();
+        let head = snake.body[0];
+        if let Some(apple_entity) = apples.list.get(&head) {
+            commands.entity(*apple_entity).despawn();
+            apples.list.remove(&head);
+            let mut rng = rand::thread_rng();
+            let pos = IVec2::new(rng.gen_range(0..b.width), rng.gen_range(0..b.height));
+            spawn_apple(pos, &mut apples, &mut commands, &b);
+        } else {
+            let len = snake.body.len();
+            snake.body.remove(len - 1);
+        }
     }
+
+    let interpolation = timer.0.elapsed_secs() / timer.0.duration().as_secs_f32() - 0.5;
+    let forward = if let Some(dir) = input_queue.0.get(0) {
+        DIR[*dir as usize].into()
+    } else {
+        head - neck
+    };
+
+    let mesh = mesh_snake(&snake, forward, interpolation);
+    *mesh_handle = meshes.add(mesh).into();
 }
 
 fn end_game() {
     println!("DEEEAAAAATTHHHHH!!!!");
 }
 
-fn mesh_snake(snake: &Snake) -> Mesh {
+fn mesh_snake(snake: &Snake, forward: IVec2, interpolation: f32) -> Mesh {
     let mut snake_mesh = Mesh::new(PrimitiveTopology::TriangleList);
 
     let mut verticies = Vec::new();
@@ -280,8 +290,8 @@ fn mesh_snake(snake: &Snake) -> Mesh {
         verticies.push([pos.x + half_size.x, pos.y + half_size.y, 0.0]);
     }
 
-    fn push_circle(verticies: &mut Vec<[f32; 3]>, pos: IVec2, radius: f32) {
-        let pos = Vec2::new(pos.x as f32, pos.y as f32) + 0.5;
+    fn push_circle(verticies: &mut Vec<[f32; 3]>, pos: IVec2, offset: Vec2, radius: f32) {
+        let pos = Vec2::new(pos.x as f32, pos.y as f32) + 0.5 + offset;
 
         let segments = 64;
 
@@ -303,21 +313,68 @@ fn mesh_snake(snake: &Snake) -> Mesh {
 
     let width = 0.6;
 
-    let mut last = snake.body[0];
-    push_circle(&mut verticies, last, 0.4);
-    for i in 0..snake.body.len() {
+    let head = snake.body[0];
+    let neck = snake.body[1];
+    let len = snake.body.len();
+    let tail = snake.body[len - 1];
+    let tail_dir = snake.body[len - 2] - tail;
+
+    let mut last = head;
+    let mut start = 1;
+
+    if interpolation >= 0.0 {
+        start = 0;
+
+        // Interpolate head
+        push_quad(
+            &mut verticies,
+            head,
+            Vec2::new(0.0, interpolation / 2.0),
+            Vec2::new(width / 2.0, interpolation / 2.0),
+            calculate_flip(forward),
+        );
+        push_circle(&mut verticies, last, forward.as_vec2() * interpolation, 0.3);
+
+        // // Interpolate tail
+        // push_quad(
+        //     &mut verticies,
+        //     tail,
+        //     Vec2::new(0.0, interpolation / 2.0),
+        //     Vec2::new(width / 2.0, interpolation / 2.0),
+        //     calculate_flip(tail_dir),
+        // );
+        // push_circle(
+        //     &mut verticies,
+        //     tail,
+        //     tail_dir.as_vec2() * interpolation,
+        //     0.3,
+        // );
+    } else {
+        // Interpolate head
+        push_quad(
+            &mut verticies,
+            head,
+            Vec2::new(0.0, interpolation / 2.0 - 0.25),
+            Vec2::new(width / 2.0, interpolation / 2.0 + 0.25),
+            calculate_flip(last - neck),
+        );
+        push_circle(
+            &mut verticies,
+            last,
+            (last - neck).as_vec2() * interpolation,
+            0.3,
+        );
+
+        // Interpolate tail
+    }
+
+    for i in start..len {
         let pos = snake.body[i];
 
-        push_circle(&mut verticies, pos, width / 2.0);
-        if i != 0 {
-            let flip1 = match (last - pos).to_array() {
-                [0, 1] => IVec2::new(1, 0),
-                [0, -1] => IVec2::new(-1, 0),
-                [1, 0] => IVec2::new(1, 1),
-                [-1, 0] => IVec2::new(-1, 1),
-                _ => IVec2::new(1, 1),
-            };
+        push_circle(&mut verticies, pos, Vec2::new(0.0, 0.0), width / 2.0);
 
+        if i > 0 {
+            let flip1 = calculate_flip(last - pos);
             push_quad(
                 &mut verticies,
                 pos,
@@ -327,19 +384,9 @@ fn mesh_snake(snake: &Snake) -> Mesh {
             );
         }
 
-        if i != snake.body.len() - 1 {
-            let flip2 = if let Some(next) = snake.body.get(i + 1) {
-                match (*next - pos).to_array() {
-                    [0, 1] => IVec2::new(1, 0),
-                    [0, -1] => IVec2::new(-1, 0),
-                    [1, 0] => IVec2::new(1, 1),
-                    [-1, 0] => IVec2::new(-1, 1),
-                    _ => IVec2::new(1, 1),
-                }
-            } else {
-                IVec2::new(1, 1)
-            };
-            
+        if i < len - 1 {
+            let next = snake.body[i + 1];
+            let flip2 = calculate_flip(next - pos);
             push_quad(
                 &mut verticies,
                 pos,
@@ -366,4 +413,24 @@ fn mesh_snake(snake: &Snake) -> Mesh {
     snake_mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
 
     snake_mesh
+}
+
+fn calculate_flip(dir: IVec2) -> IVec2 {
+    match dir.to_array() {
+        [0, 1] => IVec2::new(1, 0),
+        [0, -1] => IVec2::new(-1, 0),
+        [1, 0] => IVec2::new(1, 1),
+        [-1, 0] => IVec2::new(-1, 1),
+        _ => IVec2::new(1, 1),
+    }
+}
+
+fn get_direction(dir: IVec2) -> Direction {
+    match dir.to_array() {
+        [0, 1] => Direction::Up,
+        [0, -1] => Direction::Down,
+        [1, 0] => Direction::Right,
+        [-1, 0] => Direction::Left,
+        _ => panic!("Invalid direction"),
+    }
 }
