@@ -9,8 +9,17 @@ use std::collections::{HashMap, VecDeque};
 #[derive(Component)]
 struct Snake {
     body: Vec<IVec2>,
+    input_map: InputMap,
+    input_queue: VecDeque<Direction>,
     head_dir: IVec2,
     tail_dir: IVec2,
+}
+
+struct InputMap {
+    up: KeyCode,
+    down: KeyCode,
+    left: KeyCode,
+    right: KeyCode,
 }
 
 struct Board {
@@ -32,8 +41,6 @@ enum Direction {
 
 const DIR: [[i32; 2]; 4] = [[0, 1], [0, -1], [-1, 0], [1, 0]];
 
-struct InputQueue(VecDeque<Direction>);
-
 struct Apples {
     list: HashMap<IVec2, Entity>,
     sprite: Option<Handle<Image>>,
@@ -49,7 +56,6 @@ fn main() {
             colour2: Color::rgb(0.2, 0.2, 0.2),
         })
         .insert_resource(MovmentTimer(Timer::from_seconds(1.0 / 8.0, true)))
-        .insert_resource(InputQueue(VecDeque::new()))
         .insert_resource(Apples {
             list: HashMap::new(),
             sprite: None,
@@ -140,27 +146,60 @@ fn snake_setup(
     mut materials: ResMut<Assets<ColorMaterial>>,
     b: Res<Board>,
 ) {
-    let snake = Snake {
+    let snake1 = Snake {
         body: vec![
-            IVec2::new(5, 7),
-            IVec2::new(4, 7),
-            IVec2::new(3, 7),
-            IVec2::new(2, 7),
+            IVec2::new(4, 1),
+            IVec2::new(3, 1),
+            IVec2::new(2, 1),
+            IVec2::new(1, 1),
         ],
+        input_map: InputMap {
+            up: KeyCode::W,
+            down: KeyCode::S,
+            left: KeyCode::A,
+            right: KeyCode::D,
+        },
+        input_queue: VecDeque::new(),
         head_dir: IVec2::new(1, 0),
         tail_dir: IVec2::new(-1, 0),
     };
+    let mesh1 = mesh_snake(&snake1, 0.0);
 
-    let mesh = mesh_snake(&snake, 0.0);
+    let snake2 = Snake {
+        body: vec![
+            IVec2::new(12, 13),
+            IVec2::new(13, 13),
+            IVec2::new(14, 13),
+            IVec2::new(15, 13),
+        ],
+        input_map: InputMap {
+            up: KeyCode::Up,
+            down: KeyCode::Down,
+            left: KeyCode::Left,
+            right: KeyCode::Right,
+        },
+        input_queue: VecDeque::new(),
+        head_dir: IVec2::new(-1, 0),
+        tail_dir: IVec2::new(1, 0),
+    };
+    let mesh2 = mesh_snake(&snake2, 0.0);
 
     commands
         .spawn_bundle(MaterialMesh2dBundle {
-            mesh: meshes.add(mesh).into(),
+            mesh: meshes.add(mesh1).into(),
             material: materials.add(ColorMaterial::from(Color::rgb(0.0, 0.7, 0.25))),
             transform: Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0),
             ..default()
         })
-        .insert(snake);
+        .insert(snake1);
+    commands
+        .spawn_bundle(MaterialMesh2dBundle {
+            mesh: meshes.add(mesh2).into(),
+            material: materials.add(ColorMaterial::from(Color::rgb(0.7, 0.1, 0.0))),
+            transform: Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0),
+            ..default()
+        })
+        .insert(snake2);
 }
 
 fn snake_system(
@@ -170,41 +209,45 @@ fn snake_system(
     time: Res<Time>,
     mut timer: ResMut<MovmentTimer>,
     keys: Res<Input<KeyCode>>,
-    mut input_queue: ResMut<InputQueue>,
     mut apples: ResMut<Apples>,
     b: Res<Board>,
 ) {
+    timer.0.tick(time.delta());
+
     let mut num_apples_to_spawn = 0;
     for (mut snake, mut mesh_handle) in snake.iter_mut() {
         let head = snake.body[0];
         let neck = snake.body[1];
         let forward = head - neck;
 
-        let last_in_queue = *input_queue.0.back().unwrap_or(&get_direction(forward));
-        if input_queue.0.len() < 3 {
-            if keys.just_pressed(KeyCode::Up) || keys.just_pressed(KeyCode::W) {
+        let last_in_queue = *snake.input_queue.back().unwrap_or(&get_direction(forward));
+        if snake.input_queue.len() < 3 {
+            if keys.just_pressed(snake.input_map.up) {
                 if last_in_queue != Direction::Down && last_in_queue != Direction::Up {
-                    input_queue.0.push_back(Direction::Up);
+                    snake.input_queue.push_back(Direction::Up);
                 }
-            } else if keys.just_pressed(KeyCode::Down) || keys.just_pressed(KeyCode::S) {
+            }
+            if keys.just_pressed(snake.input_map.down) {
                 if last_in_queue != Direction::Up && last_in_queue != Direction::Down {
-                    input_queue.0.push_back(Direction::Down);
+                    snake.input_queue.push_back(Direction::Down);
                 }
-            } else if keys.just_pressed(KeyCode::Left) || keys.just_pressed(KeyCode::A) {
+            }
+            if keys.just_pressed(snake.input_map.left) {
                 if last_in_queue != Direction::Right && last_in_queue != Direction::Left {
-                    input_queue.0.push_back(Direction::Left);
+                    snake.input_queue.push_back(Direction::Left);
                 }
-            } else if keys.just_pressed(KeyCode::Right) || keys.just_pressed(KeyCode::D) {
+            }
+            if keys.just_pressed(snake.input_map.right) {
                 if last_in_queue != Direction::Left && last_in_queue != Direction::Right {
-                    input_queue.0.push_back(Direction::Right);
+                    snake.input_queue.push_back(Direction::Right);
                 }
             }
         }
 
-        if timer.0.tick(time.delta()).just_finished() {
+        if timer.0.just_finished() {
             let current_dir = head - neck;
 
-            if let Some(direction) = input_queue.0.pop_front() {
+            if let Some(direction) = snake.input_queue.pop_front() {
                 let dir = DIR[direction as usize];
                 let dir = IVec2::new(dir[0], dir[1]);
                 if current_dir + dir != IVec2::ZERO {
@@ -217,10 +260,7 @@ fn snake_system(
             }
 
             let new_head = snake.body[0];
-            if new_head.x < 0 || new_head.x >= b.width {
-                end_game();
-            }
-            if new_head.y < 0 || new_head.y >= b.height {
+            if !in_bounds(new_head, &b) {
                 end_game();
             }
             for snake_body in snake.body.iter().skip(1) {
@@ -243,7 +283,7 @@ fn snake_system(
         }
 
         let interpolation = timer.0.elapsed_secs() / timer.0.duration().as_secs_f32() - 0.5;
-        snake.head_dir = if let Some(dir) = input_queue.0.get(0) {
+        snake.head_dir = if let Some(dir) = snake.input_queue.get(0) {
             DIR[*dir as usize].into()
         } else {
             head - neck
@@ -273,6 +313,10 @@ fn snake_system(
             break 'outer;
         }
     }
+}
+
+fn in_bounds(pos: IVec2, b: &Board) -> bool {
+    pos.x >= 0 && pos.x < b.width && pos.y >= 0 && pos.y < b.height
 }
 
 fn end_game() {
