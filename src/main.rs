@@ -174,84 +174,105 @@ fn snake_system(
     mut apples: ResMut<Apples>,
     b: Res<Board>,
 ) {
-    let (mut snake, mut mesh_handle) = snake.single_mut();
+    let mut num_apples_to_spawn = 0;
+    for (mut snake, mut mesh_handle) in snake.iter_mut() {
+        let head = snake.body[0];
+        let neck = snake.body[1];
+        let forward = head - neck;
 
-    let head = snake.body[0];
-    let neck = snake.body[1];
-    let forward = head - neck;
-
-    let last_in_queue = *input_queue.0.back().unwrap_or(&get_direction(forward));
-    if input_queue.0.len() < 3 {
-        if keys.just_pressed(KeyCode::Up) || keys.just_pressed(KeyCode::W) {
-            if last_in_queue != Direction::Down && last_in_queue != Direction::Up {
-                input_queue.0.push_back(Direction::Up);
-            }
-        } else if keys.just_pressed(KeyCode::Down) || keys.just_pressed(KeyCode::S) {
-            if last_in_queue != Direction::Up && last_in_queue != Direction::Down {
-                input_queue.0.push_back(Direction::Down);
-            }
-        } else if keys.just_pressed(KeyCode::Left) || keys.just_pressed(KeyCode::A) {
-            if last_in_queue != Direction::Right && last_in_queue != Direction::Left {
-                input_queue.0.push_back(Direction::Left);
-            }
-        } else if keys.just_pressed(KeyCode::Right) || keys.just_pressed(KeyCode::D) {
-            if last_in_queue != Direction::Left && last_in_queue != Direction::Right {
-                input_queue.0.push_back(Direction::Right);
+        let last_in_queue = *input_queue.0.back().unwrap_or(&get_direction(forward));
+        if input_queue.0.len() < 3 {
+            if keys.just_pressed(KeyCode::Up) || keys.just_pressed(KeyCode::W) {
+                if last_in_queue != Direction::Down && last_in_queue != Direction::Up {
+                    input_queue.0.push_back(Direction::Up);
+                }
+            } else if keys.just_pressed(KeyCode::Down) || keys.just_pressed(KeyCode::S) {
+                if last_in_queue != Direction::Up && last_in_queue != Direction::Down {
+                    input_queue.0.push_back(Direction::Down);
+                }
+            } else if keys.just_pressed(KeyCode::Left) || keys.just_pressed(KeyCode::A) {
+                if last_in_queue != Direction::Right && last_in_queue != Direction::Left {
+                    input_queue.0.push_back(Direction::Left);
+                }
+            } else if keys.just_pressed(KeyCode::Right) || keys.just_pressed(KeyCode::D) {
+                if last_in_queue != Direction::Left && last_in_queue != Direction::Right {
+                    input_queue.0.push_back(Direction::Right);
+                }
             }
         }
-    }
 
-    if timer.0.tick(time.delta()).just_finished() {
-        let current_dir = head - neck;
+        if timer.0.tick(time.delta()).just_finished() {
+            let current_dir = head - neck;
 
-        if let Some(direction) = input_queue.0.pop_front() {
-            let dir = DIR[direction as usize];
-            let dir = IVec2::new(dir[0], dir[1]);
-            if current_dir + dir != IVec2::ZERO {
-                snake.body.insert(0, head + dir);
+            if let Some(direction) = input_queue.0.pop_front() {
+                let dir = DIR[direction as usize];
+                let dir = IVec2::new(dir[0], dir[1]);
+                if current_dir + dir != IVec2::ZERO {
+                    snake.body.insert(0, head + dir);
+                } else {
+                    snake.body.insert(0, head + head - neck);
+                }
             } else {
                 snake.body.insert(0, head + head - neck);
             }
-        } else {
-            snake.body.insert(0, head + head - neck);
-        }
 
-        let new_head = snake.body[0];
-        if new_head.x < 0 || new_head.x >= b.width {
-            end_game();
-        }
-        if new_head.y < 0 || new_head.y >= b.height {
-            end_game();
-        }
-        for snake_body in snake.body.iter().skip(1) {
-            if *snake_body == new_head {
+            let new_head = snake.body[0];
+            if new_head.x < 0 || new_head.x >= b.width {
                 end_game();
+            }
+            if new_head.y < 0 || new_head.y >= b.height {
+                end_game();
+            }
+            for snake_body in snake.body.iter().skip(1) {
+                if *snake_body == new_head {
+                    end_game();
+                }
+            }
+
+            let head = snake.body[0];
+            if let Some(apple_entity) = apples.list.get(&head) {
+                commands.entity(*apple_entity).despawn();
+                apples.list.remove(&head);
+
+                num_apples_to_spawn += 1;
+            } else {
+                let len = snake.body.len();
+                snake.tail_dir = snake.body[len - 2] - snake.body[len - 1];
+                snake.body.remove(len - 1);
             }
         }
 
-        let head = snake.body[0];
-        if let Some(apple_entity) = apples.list.get(&head) {
-            commands.entity(*apple_entity).despawn();
-            apples.list.remove(&head);
-            let mut rng = rand::thread_rng();
-            let pos = IVec2::new(rng.gen_range(0..b.width), rng.gen_range(0..b.height));
-            spawn_apple(pos, &mut apples, &mut commands, &b);
+        let interpolation = timer.0.elapsed_secs() / timer.0.duration().as_secs_f32() - 0.5;
+        snake.head_dir = if let Some(dir) = input_queue.0.get(0) {
+            DIR[*dir as usize].into()
         } else {
-            let len = snake.body.len();
-            snake.tail_dir = snake.body[len - 2] - snake.body[len - 1];
-            snake.body.remove(len - 1);
-        }
+            head - neck
+        };
+
+        let mesh = mesh_snake(&snake, interpolation);
+        *mesh_handle = meshes.add(mesh).into();
     }
 
-    let interpolation = timer.0.elapsed_secs() / timer.0.duration().as_secs_f32() - 0.5;
-    snake.head_dir = if let Some(dir) = input_queue.0.get(0) {
-        DIR[*dir as usize].into()
-    } else {
-        head - neck
-    };
+    let mut rng = rand::thread_rng();
+    let mut count = 0;
+    'outer: while num_apples_to_spawn > 0 {
+        let pos = IVec2::new(rng.gen_range(0..b.width), rng.gen_range(0..b.height));
+        if !apples.list.contains_key(&pos) {
+            for (snake, _) in snake.iter() {
+                if snake.body.contains(&pos) {
+                    continue 'outer;
+                }
+            }
 
-    let mesh = mesh_snake(&snake, interpolation);
-    *mesh_handle = meshes.add(mesh).into();
+            spawn_apple(pos, &mut apples, &mut commands, &b);
+            num_apples_to_spawn -= 1;
+        }
+
+        count += 1;
+        if count > 1000 {
+            break 'outer;
+        }
+    }
 }
 
 fn end_game() {
