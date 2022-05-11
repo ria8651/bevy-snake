@@ -26,11 +26,23 @@ pub struct Snake {
     tail_dir: IVec2,
 }
 
+#[derive(Component)]
+pub struct Bullet {
+    pos: IVec2,
+    dir: IVec2,
+    speed: u32,
+}
+
+struct Settings {
+    interpolation: bool,
+}
+
 struct InputMap {
     up: KeyCode,
     down: KeyCode,
     left: KeyCode,
     right: KeyCode,
+    shoot: KeyCode,
 }
 
 struct Board {
@@ -66,26 +78,32 @@ fn main() {
             colour1: Color::rgb(0.3, 0.3, 0.3),
             colour2: Color::rgb(0.2, 0.2, 0.2),
         })
-        .insert_resource(MovmentTimer(Timer::from_seconds(1.0 / 3.0, true)))
+        .insert_resource(Settings {
+            interpolation: true,
+        })
+        .insert_resource(MovmentTimer(Timer::from_seconds(1.0 / 8.0, true)))
         .insert_resource(Apples {
             list: HashMap::new(),
             sprite: None,
         })
         .add_system(bevy::input::system::exit_on_esc_system)
-        .add_system(state_controller)
         .add_startup_system(scene_setup)
         .add_startup_system(snake_setup)
+        .add_system(state_controller)
+        .add_system(settings_system)
         .add_state(GameState::Menu)
-        .add_system_set(SystemSet::on_update(GameState::Playing).with_system(snake_system))
+        .add_system_set(
+            SystemSet::on_update(GameState::Playing)
+                .with_system(snake_system)
+                .with_system(bullet_system),
+        )
         .add_system_set(SystemSet::on_enter(GameState::Playing).with_system(reset_game))
         .run();
 }
 
 fn state_controller(mut game_state: ResMut<State<GameState>>, keys: Res<Input<KeyCode>>) {
     match game_state.current() {
-        GameState::Menu => {
-            game_state.set(GameState::Playing).unwrap()
-        }
+        GameState::Menu => game_state.set(GameState::Playing).unwrap(),
         GameState::Playing => {
             if keys.just_pressed(KeyCode::P) {
                 game_state.set(GameState::Paused).unwrap()
@@ -109,6 +127,7 @@ fn scene_setup(
     b: Res<Board>,
     mut apples: ResMut<Apples>,
     assets: Res<AssetServer>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     apples.sprite = Some(assets.load("images/apple.png"));
 
@@ -172,24 +191,26 @@ fn snake_setup(
             down: KeyCode::S,
             left: KeyCode::A,
             right: KeyCode::D,
+            shoot: KeyCode::R,
         },
         input_queue: VecDeque::new(),
         head_dir: IVec2::new(0, 0),
         tail_dir: IVec2::new(0, 0),
     };
 
-    let snake2 = Snake {
-        body: Vec::new(),
-        input_map: InputMap {
-            up: KeyCode::Up,
-            down: KeyCode::Down,
-            left: KeyCode::Left,
-            right: KeyCode::Right,
-        },
-        input_queue: VecDeque::new(),
-        head_dir: IVec2::new(-1, 0),
-        tail_dir: IVec2::new(1, 0),
-    };
+    // let snake2 = Snake {
+    //     body: Vec::new(),
+    //     input_map: InputMap {
+    //         up: KeyCode::Up,
+    //         down: KeyCode::Down,
+    //         left: KeyCode::Left,
+    //         right: KeyCode::Right,
+    //         shoot: KeyCode::M,
+    //     },
+    //     input_queue: VecDeque::new(),
+    //     head_dir: IVec2::new(-1, 0),
+    //     tail_dir: IVec2::new(1, 0),
+    // };
 
     commands
         .spawn_bundle(MaterialMesh2dBundle {
@@ -198,18 +219,28 @@ fn snake_setup(
             ..default()
         })
         .insert(snake1);
-    commands
-        .spawn_bundle(MaterialMesh2dBundle {
-            material: materials.add(ColorMaterial::from(Color::rgb(0.7, 0.1, 0.0))),
-            transform: Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0),
-            ..default()
-        })
-        .insert(snake2);
+    //     commands
+    //         .spawn_bundle(MaterialMesh2dBundle {
+    //             material: materials.add(ColorMaterial::from(Color::rgb(0.0, 0.1, 0.7))),
+    //             transform: Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0),
+    //             ..default()
+    //         })
+    //         .insert(snake2);
 }
 
-fn reset_game(mut snake_query: Query<(&mut Snake, &mut Mesh2dHandle)>) {
+fn settings_system(mut settings: ResMut<Settings>, keys: Res<Input<KeyCode>>) {
+    if keys.just_pressed(KeyCode::I) {
+        settings.interpolation = !settings.interpolation;
+    }
+}
+
+fn reset_game(
+    mut snake_query: Query<&mut Snake>,
+    bullet_query: Query<(Entity, With<Bullet>)>,
+    mut commands: Commands,
+) {
     let mut i = 0;
-    for (mut snake, mut mesh) in snake_query.iter_mut() {
+    for mut snake in snake_query.iter_mut() {
         if i == 0 {
             snake.body = vec![
                 IVec2::new(4, 1),
@@ -232,24 +263,10 @@ fn reset_game(mut snake_query: Query<(&mut Snake, &mut Mesh2dHandle)>) {
 
         i += 1;
     }
-}
 
-fn spawn_apple(pos: IVec2, apples: &mut Apples, commands: &mut Commands, b: &Board) {
-    apples.list.insert(
-        pos,
-        commands
-            .spawn_bundle(SpriteBundle {
-                texture: apples.sprite.as_ref().unwrap().clone(),
-                transform: Transform::from_xyz(
-                    pos.x as f32 - b.width as f32 / 2.0 + 0.5,
-                    pos.y as f32 - b.height as f32 / 2.0 + 0.5,
-                    5.0,
-                )
-                .with_scale(Vec3::splat(1.0 / 512.0)),
-                ..default()
-            })
-            .id(),
-    );
+    for bullet in bullet_query.iter() {
+        commands.entity(bullet.0).despawn();
+    }
 }
 
 fn snake_system(
@@ -262,6 +279,8 @@ fn snake_system(
     mut apples: ResMut<Apples>,
     b: Res<Board>,
     mut app_state: ResMut<State<GameState>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    settings: Res<Settings>,
 ) {
     timer.0.tick(time.delta());
 
@@ -269,6 +288,7 @@ fn snake_system(
     for (mut snake, mut mesh_handle) in snake_query.iter_mut() {
         let head = snake.body[0];
         let neck = snake.body[1];
+        let current_dir = head - neck;
         let forward = head - neck;
 
         let last_in_queue = *snake.input_queue.back().unwrap_or(&get_direction(forward));
@@ -295,19 +315,16 @@ fn snake_system(
             }
         }
 
-        if timer.0.just_finished() {
-            let current_dir = head - neck;
+        if keys.just_pressed(snake.input_map.shoot) {
+            spawn_bullet(head, current_dir, &mut commands, &mut materials, &b);
+        }
 
+        if timer.0.just_finished() {
             if let Some(direction) = snake.input_queue.pop_front() {
-                let dir = DIR[direction as usize];
-                let dir = IVec2::new(dir[0], dir[1]);
-                if current_dir + dir != IVec2::ZERO {
-                    snake.body.insert(0, head + dir);
-                } else {
-                    snake.body.insert(0, head + head - neck);
-                }
+                let dir: IVec2 = DIR[direction as usize].into();
+                snake.body.insert(0, head + dir);
             } else {
-                snake.body.insert(0, head + head - neck);
+                snake.body.insert(0, head + current_dir);
             }
 
             let head = snake.body[0];
@@ -322,14 +339,17 @@ fn snake_system(
                 snake.body.remove(len - 1);
             }
         }
-
-        let interpolation = timer.0.elapsed_secs() / timer.0.duration().as_secs_f32() - 0.5;
         snake.head_dir = if let Some(dir) = snake.input_queue.get(0) {
             DIR[*dir as usize].into()
         } else {
             head - neck
         };
 
+        let interpolation = if settings.interpolation {
+            timer.0.elapsed_secs() / timer.0.duration().as_secs_f32() - 0.5
+        } else {
+            0.0
+        };
         let mesh = mesh_snake(&snake, interpolation);
         *mesh_handle = meshes.add(mesh).into();
     }
@@ -374,6 +394,71 @@ fn snake_system(
             break 'outer;
         }
     }
+}
+
+fn bullet_system(
+    mut commands: Commands,
+    snake_query: Query<&Snake>,
+    mut bullet_query: Query<(&mut Bullet, &mut Mesh2dHandle, Entity)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    timer: Res<MovmentTimer>,
+    b: Res<Board>,
+    settings: Res<Settings>,
+) {
+    for (mut bullet, mut mesh_handle, bullet_entity) in bullet_query.iter_mut() {
+        if timer.0.just_finished() {
+            let new_pos = bullet.pos + bullet.dir * bullet.speed as i32;
+            if !in_bounds(new_pos, &b) {
+                commands.entity(bullet_entity).despawn();
+                return;
+            }
+
+            bullet.pos = new_pos;
+        }
+
+        let interpolation = if settings.interpolation {
+            timer.0.elapsed_secs() / timer.0.duration().as_secs_f32() - 0.5
+        } else {
+            0.0
+        };
+        let mesh = mesh_bullet(&bullet, interpolation);
+        *mesh_handle = meshes.add(mesh).into();
+    }
+}
+
+fn spawn_apple(pos: IVec2, apples: &mut Apples, commands: &mut Commands, b: &Board) {
+    apples.list.insert(
+        pos,
+        commands
+            .spawn_bundle(SpriteBundle {
+                texture: apples.sprite.as_ref().unwrap().clone(),
+                transform: Transform::from_xyz(
+                    pos.x as f32 - b.width as f32 / 2.0 + 0.5,
+                    pos.y as f32 - b.height as f32 / 2.0 + 0.5,
+                    5.0,
+                )
+                .with_scale(Vec3::splat(1.0 / 512.0)),
+                ..default()
+            })
+            .id(),
+    );
+}
+
+fn spawn_bullet(
+    pos: IVec2,
+    dir: IVec2,
+    commands: &mut Commands,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+    b: &Board,
+) {
+    let bullet = Bullet { pos, dir, speed: 2 };
+    commands
+        .spawn_bundle(MaterialMesh2dBundle {
+            material: materials.add(ColorMaterial::from(Color::rgb(1.0, 1.0, 0.26))),
+            transform: Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0),
+            ..default()
+        })
+        .insert(bullet);
 }
 
 fn in_bounds(pos: IVec2, b: &Board) -> bool {
