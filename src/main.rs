@@ -6,8 +6,18 @@ use bevy::{
 use rand::Rng;
 use std::collections::{HashMap, VecDeque};
 
+mod meshing;
+use meshing::*;
+
+#[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
+enum GameState {
+    Playing,
+    Paused,
+    GameOver,
+}
+
 #[derive(Component)]
-struct Snake {
+pub struct Snake {
     body: Vec<IVec2>,
     input_map: InputMap,
     input_queue: VecDeque<Direction>,
@@ -55,16 +65,33 @@ fn main() {
             colour1: Color::rgb(0.3, 0.3, 0.3),
             colour2: Color::rgb(0.2, 0.2, 0.2),
         })
-        .insert_resource(MovmentTimer(Timer::from_seconds(1.0 / 8.0, true)))
+        .insert_resource(MovmentTimer(Timer::from_seconds(1.0 / 3.0, true)))
         .insert_resource(Apples {
             list: HashMap::new(),
             sprite: None,
         })
         .add_system(bevy::input::system::exit_on_esc_system)
+        .add_system(state_controller)
         .add_startup_system(scene_setup)
         .add_startup_system(snake_setup)
-        .add_system(snake_system)
+        .add_state(GameState::Playing)
+        // .add_system_set(
+        //     SystemSet::on_enter(GameState::Playing)
+        //         .with_system(scene_setup)
+        //         .with_system(snake_setup),
+        // )
+        .add_system_set(SystemSet::on_update(GameState::Playing).with_system(snake_system))
         .run();
+}
+
+fn state_controller(mut game_state: ResMut<State<GameState>>, keys: Res<Input<KeyCode>>) {
+    if keys.just_pressed(KeyCode::P) {
+        match game_state.current() {
+            GameState::Playing => game_state.set(GameState::Paused).unwrap(),
+            GameState::Paused => game_state.set(GameState::Playing).unwrap(),
+            _ => {}
+        }
+    }
 }
 
 fn spawn_apple(pos: IVec2, apples: &mut Apples, commands: &mut Commands, b: &Board) {
@@ -182,7 +209,7 @@ fn snake_setup(
         head_dir: IVec2::new(-1, 0),
         tail_dir: IVec2::new(1, 0),
     };
-    let mesh2 = mesh_snake(&snake2, 0.0);
+    let mesh2 = meshing::mesh_snake(&snake2, 0.0);
 
     commands
         .spawn_bundle(MaterialMesh2dBundle {
@@ -204,18 +231,19 @@ fn snake_setup(
 
 fn snake_system(
     mut commands: Commands,
-    mut snake: Query<(&mut Snake, &mut Mesh2dHandle)>,
+    mut snake_query: Query<(&mut Snake, &mut Mesh2dHandle)>,
     mut meshes: ResMut<Assets<Mesh>>,
     time: Res<Time>,
     mut timer: ResMut<MovmentTimer>,
     keys: Res<Input<KeyCode>>,
     mut apples: ResMut<Apples>,
     b: Res<Board>,
+    mut app_state: ResMut<State<GameState>>,
 ) {
     timer.0.tick(time.delta());
 
     let mut num_apples_to_spawn = 0;
-    for (mut snake, mut mesh_handle) in snake.iter_mut() {
+    for (mut snake, mut mesh_handle) in snake_query.iter_mut() {
         let head = snake.body[0];
         let neck = snake.body[1];
         let forward = head - neck;
@@ -259,16 +287,6 @@ fn snake_system(
                 snake.body.insert(0, head + head - neck);
             }
 
-            let new_head = snake.body[0];
-            if !in_bounds(new_head, &b) {
-                end_game();
-            }
-            for snake_body in snake.body.iter().skip(1) {
-                if *snake_body == new_head {
-                    end_game();
-                }
-            }
-
             let head = snake.body[0];
             if let Some(apple_entity) = apples.list.get(&head) {
                 commands.entity(*apple_entity).despawn();
@@ -293,12 +311,32 @@ fn snake_system(
         *mesh_handle = meshes.add(mesh).into();
     }
 
+    // Handle end game
+    if timer.0.just_finished() {
+        for (snake, _) in snake_query.iter() {
+            let new_head = snake.body[0];
+            if !in_bounds(new_head, &b) {
+                app_state.set(GameState::Paused).unwrap();
+                return;
+            }
+
+            for (other_snake, _) in snake_query.iter() {
+                for snake_body in other_snake.body.iter().skip(1) {
+                    if *snake_body == new_head {
+                        app_state.set(GameState::Paused).unwrap();
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     let mut rng = rand::thread_rng();
     let mut count = 0;
     'outer: while num_apples_to_spawn > 0 {
         let pos = IVec2::new(rng.gen_range(0..b.width), rng.gen_range(0..b.height));
         if !apples.list.contains_key(&pos) {
-            for (snake, _) in snake.iter() {
+            for (snake, _) in snake_query.iter() {
                 if snake.body.contains(&pos) {
                     continue 'outer;
                 }
@@ -317,190 +355,6 @@ fn snake_system(
 
 fn in_bounds(pos: IVec2, b: &Board) -> bool {
     pos.x >= 0 && pos.x < b.width && pos.y >= 0 && pos.y < b.height
-}
-
-fn end_game() {
-    println!("DEEEAAAAATTHHHHH!!!!");
-}
-
-fn mesh_snake(snake: &Snake, interpolation: f32) -> Mesh {
-    let mut verticies = Vec::new();
-
-    fn push_quad(
-        verticies: &mut Vec<[f32; 3]>,
-        pos: IVec2,
-        offset: Vec2,
-        half_size: Vec2,
-        flip: IVec2,
-    ) {
-        let offset = if flip.y == 1 {
-            Vec2::new(offset.y, offset.x)
-        } else {
-            offset
-        };
-
-        let half_size = if flip.y == 1 {
-            Vec2::new(half_size.y, half_size.x)
-        } else {
-            half_size
-        };
-        let pos = Vec2::new(pos.x as f32, pos.y as f32) + 0.5 + offset * flip.x as f32;
-
-        verticies.push([pos.x - half_size.x, pos.y - half_size.y, 0.0]);
-        verticies.push([pos.x + half_size.x, pos.y - half_size.y, 0.0]);
-        verticies.push([pos.x - half_size.x, pos.y + half_size.y, 0.0]);
-
-        verticies.push([pos.x - half_size.x, pos.y + half_size.y, 0.0]);
-        verticies.push([pos.x + half_size.x, pos.y - half_size.y, 0.0]);
-        verticies.push([pos.x + half_size.x, pos.y + half_size.y, 0.0]);
-    }
-
-    fn push_circle(verticies: &mut Vec<[f32; 3]>, pos: IVec2, offset: Vec2, radius: f32) {
-        let pos = Vec2::new(pos.x as f32, pos.y as f32) + 0.5 + offset;
-
-        let segments = 64;
-
-        let step = std::f32::consts::TAU / segments as f32;
-        let mut angle = step;
-        let mut last = Vec2::new(0.0, radius);
-        for _ in 0..segments {
-            let x = radius * angle.sin();
-            let y = radius * angle.cos();
-
-            verticies.push([pos.x, pos.y, 0.0]);
-            verticies.push([pos.x + x, pos.y + y, 0.0]);
-            verticies.push([pos.x + last.x, pos.y + last.y, 0.0]);
-
-            angle += step;
-            last = Vec2::new(x, y);
-        }
-    }
-
-    let width = 0.6;
-    let head_size = 0.7;
-
-    let head = snake.body[0];
-    let neck = snake.body[1];
-    let len = snake.body.len();
-    let tail = snake.body[len - 1];
-
-    let mut start = 1;
-    let mut end = len - 1;
-
-    if interpolation >= 0.0 {
-        start = 0;
-
-        // Interpolate head
-        push_quad(
-            &mut verticies,
-            head,
-            Vec2::new(0.0, interpolation / 2.0),
-            Vec2::new(width / 2.0, interpolation / 2.0),
-            calculate_flip(snake.head_dir),
-        );
-        push_circle(
-            &mut verticies,
-            head,
-            snake.head_dir.as_vec2() * interpolation,
-            head_size / 2.0,
-        );
-
-        // Interpolate tail
-        let tail_dir = snake.body[len - 2] - snake.body[len - 1];
-        push_quad(
-            &mut verticies,
-            tail,
-            Vec2::new(0.0, interpolation / 2.0 + 0.25),
-            Vec2::new(width / 2.0, -interpolation / 2.0 + 0.25),
-            calculate_flip(tail_dir),
-        );
-        push_circle(
-            &mut verticies,
-            tail,
-            tail_dir.as_vec2() * interpolation,
-            width / 2.0,
-        );
-    } else {
-        end = len;
-
-        // Interpolate head
-        push_quad(
-            &mut verticies,
-            head,
-            Vec2::new(0.0, interpolation / 2.0 - 0.25),
-            Vec2::new(width / 2.0, interpolation / 2.0 + 0.25),
-            calculate_flip(head - neck),
-        );
-        push_circle(
-            &mut verticies,
-            head,
-            (head - neck).as_vec2() * interpolation,
-            head_size / 2.0,
-        );
-
-        // Interpolate tail
-        push_quad(
-            &mut verticies,
-            tail,
-            Vec2::new(0.0, interpolation / 2.0),
-            Vec2::new(width / 2.0, -interpolation / 2.0),
-            calculate_flip(snake.tail_dir),
-        );
-        push_circle(
-            &mut verticies,
-            tail,
-            snake.tail_dir.as_vec2() * interpolation,
-            width / 2.0,
-        );
-    }
-
-    let mut last = head;
-    for i in start..end {
-        let pos = snake.body[i];
-
-        push_circle(&mut verticies, pos, Vec2::new(0.0, 0.0), width / 2.0);
-
-        if i > 0 {
-            let flip1 = calculate_flip(last - pos);
-            push_quad(
-                &mut verticies,
-                pos,
-                Vec2::new(0.0, 0.25),
-                Vec2::new(width / 2.0, 0.25),
-                flip1,
-            );
-        }
-
-        if i < len - 1 {
-            let next = snake.body[i + 1];
-            let flip2 = calculate_flip(next - pos);
-            push_quad(
-                &mut verticies,
-                pos,
-                Vec2::new(0.0, 0.25),
-                Vec2::new(width / 2.0, 0.25),
-                flip2,
-            );
-        }
-
-        last = pos;
-    }
-
-    let mut positions = Vec::<[f32; 3]>::new();
-    let mut normals = Vec::<[f32; 3]>::new();
-    let mut uvs = Vec::<[f32; 2]>::new();
-    for position in &verticies {
-        positions.push(*position);
-        normals.push([0.0, 0.0, 1.0]);
-        uvs.push([0.0, 0.0]);
-    }
-
-    let mut snake_mesh = Mesh::new(PrimitiveTopology::TriangleList);
-    snake_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    snake_mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-    snake_mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-
-    snake_mesh
 }
 
 fn calculate_flip(dir: IVec2) -> IVec2 {
