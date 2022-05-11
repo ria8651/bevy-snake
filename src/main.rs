@@ -11,6 +11,7 @@ use meshing::*;
 
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 enum GameState {
+    Menu,
     Playing,
     Paused,
     GameOver,
@@ -74,42 +75,33 @@ fn main() {
         .add_system(state_controller)
         .add_startup_system(scene_setup)
         .add_startup_system(snake_setup)
-        .add_state(GameState::Playing)
-        // .add_system_set(
-        //     SystemSet::on_enter(GameState::Playing)
-        //         .with_system(scene_setup)
-        //         .with_system(snake_setup),
-        // )
+        .add_state(GameState::Menu)
         .add_system_set(SystemSet::on_update(GameState::Playing).with_system(snake_system))
+        .add_system_set(SystemSet::on_enter(GameState::Playing).with_system(reset_game))
         .run();
 }
 
 fn state_controller(mut game_state: ResMut<State<GameState>>, keys: Res<Input<KeyCode>>) {
-    if keys.just_pressed(KeyCode::P) {
-        match game_state.current() {
-            GameState::Playing => game_state.set(GameState::Paused).unwrap(),
-            GameState::Paused => game_state.set(GameState::Playing).unwrap(),
-            _ => {}
+    match game_state.current() {
+        GameState::Menu => {
+            game_state.set(GameState::Playing).unwrap()
+        }
+        GameState::Playing => {
+            if keys.just_pressed(KeyCode::P) {
+                game_state.set(GameState::Paused).unwrap()
+            }
+        }
+        GameState::Paused => {
+            if keys.just_pressed(KeyCode::P) {
+                game_state.set(GameState::Playing).unwrap()
+            }
+        }
+        GameState::GameOver => {
+            if keys.just_pressed(KeyCode::Space) {
+                game_state.set(GameState::Playing).unwrap()
+            }
         }
     }
-}
-
-fn spawn_apple(pos: IVec2, apples: &mut Apples, commands: &mut Commands, b: &Board) {
-    apples.list.insert(
-        pos,
-        commands
-            .spawn_bundle(SpriteBundle {
-                texture: apples.sprite.as_ref().unwrap().clone(),
-                transform: Transform::from_xyz(
-                    pos.x as f32 - b.width as f32 / 2.0 + 0.5,
-                    pos.y as f32 - b.height as f32 / 2.0 + 0.5,
-                    5.0,
-                )
-                .with_scale(Vec3::splat(1.0 / 512.0)),
-                ..default()
-            })
-            .id(),
-    );
 }
 
 fn scene_setup(
@@ -174,12 +166,7 @@ fn snake_setup(
     b: Res<Board>,
 ) {
     let snake1 = Snake {
-        body: vec![
-            IVec2::new(4, 1),
-            IVec2::new(3, 1),
-            IVec2::new(2, 1),
-            IVec2::new(1, 1),
-        ],
+        body: Vec::new(),
         input_map: InputMap {
             up: KeyCode::W,
             down: KeyCode::S,
@@ -187,18 +174,12 @@ fn snake_setup(
             right: KeyCode::D,
         },
         input_queue: VecDeque::new(),
-        head_dir: IVec2::new(1, 0),
-        tail_dir: IVec2::new(-1, 0),
+        head_dir: IVec2::new(0, 0),
+        tail_dir: IVec2::new(0, 0),
     };
-    let mesh1 = mesh_snake(&snake1, 0.0);
 
     let snake2 = Snake {
-        body: vec![
-            IVec2::new(12, 13),
-            IVec2::new(13, 13),
-            IVec2::new(14, 13),
-            IVec2::new(15, 13),
-        ],
+        body: Vec::new(),
         input_map: InputMap {
             up: KeyCode::Up,
             down: KeyCode::Down,
@@ -209,11 +190,9 @@ fn snake_setup(
         head_dir: IVec2::new(-1, 0),
         tail_dir: IVec2::new(1, 0),
     };
-    let mesh2 = meshing::mesh_snake(&snake2, 0.0);
 
     commands
         .spawn_bundle(MaterialMesh2dBundle {
-            mesh: meshes.add(mesh1).into(),
             material: materials.add(ColorMaterial::from(Color::rgb(0.0, 0.7, 0.25))),
             transform: Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0),
             ..default()
@@ -221,12 +200,56 @@ fn snake_setup(
         .insert(snake1);
     commands
         .spawn_bundle(MaterialMesh2dBundle {
-            mesh: meshes.add(mesh2).into(),
             material: materials.add(ColorMaterial::from(Color::rgb(0.7, 0.1, 0.0))),
             transform: Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0),
             ..default()
         })
         .insert(snake2);
+}
+
+fn reset_game(mut snake_query: Query<(&mut Snake, &mut Mesh2dHandle)>) {
+    let mut i = 0;
+    for (mut snake, mut mesh) in snake_query.iter_mut() {
+        if i == 0 {
+            snake.body = vec![
+                IVec2::new(4, 1),
+                IVec2::new(3, 1),
+                IVec2::new(2, 1),
+                IVec2::new(1, 1),
+            ];
+            snake.head_dir = IVec2::new(1, 0);
+            snake.tail_dir = IVec2::new(-1, 0);
+        } else if i == 1 {
+            snake.body = vec![
+                IVec2::new(12, 13),
+                IVec2::new(13, 13),
+                IVec2::new(14, 13),
+                IVec2::new(15, 13),
+            ];
+            snake.head_dir = IVec2::new(-1, 0);
+            snake.tail_dir = IVec2::new(1, 0);
+        }
+
+        i += 1;
+    }
+}
+
+fn spawn_apple(pos: IVec2, apples: &mut Apples, commands: &mut Commands, b: &Board) {
+    apples.list.insert(
+        pos,
+        commands
+            .spawn_bundle(SpriteBundle {
+                texture: apples.sprite.as_ref().unwrap().clone(),
+                transform: Transform::from_xyz(
+                    pos.x as f32 - b.width as f32 / 2.0 + 0.5,
+                    pos.y as f32 - b.height as f32 / 2.0 + 0.5,
+                    5.0,
+                )
+                .with_scale(Vec3::splat(1.0 / 512.0)),
+                ..default()
+            })
+            .id(),
+    );
 }
 
 fn snake_system(
