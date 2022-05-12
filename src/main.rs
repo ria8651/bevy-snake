@@ -1,4 +1,5 @@
 use bevy::{
+    diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin},
     prelude::*,
     render::{camera::ScalingMode, mesh::PrimitiveTopology},
     sprite::{MaterialMesh2dBundle, Mesh2dHandle},
@@ -53,6 +54,7 @@ struct Board {
 }
 
 struct MovmentTimer(Timer);
+struct BulletTimer(Timer);
 
 #[derive(PartialEq, Clone, Copy)]
 enum Direction {
@@ -70,6 +72,8 @@ struct Apples {
 }
 
 fn main() {
+    let movment_timer = Timer::from_seconds(1.0 / 8.0, true);
+
     App::new()
         .add_plugins(DefaultPlugins)
         .insert_resource(Board {
@@ -81,12 +85,14 @@ fn main() {
         .insert_resource(Settings {
             interpolation: true,
         })
-        .insert_resource(MovmentTimer(Timer::from_seconds(1.0 / 8.0, true)))
+        .insert_resource(MovmentTimer(movment_timer.clone()))
+        .insert_resource(BulletTimer(movment_timer))
         .insert_resource(Apples {
             list: HashMap::new(),
             sprite: None,
         })
         .add_system(bevy::input::system::exit_on_esc_system)
+        .add_plugin(FrameTimeDiagnosticsPlugin::default())
         .add_startup_system(scene_setup)
         .add_startup_system(snake_setup)
         .add_system(state_controller)
@@ -98,6 +104,7 @@ fn main() {
                 .with_system(bullet_system),
         )
         .add_system_set(SystemSet::on_enter(GameState::Playing).with_system(reset_game))
+        .add_system(fps_system)
         .run();
 }
 
@@ -131,6 +138,7 @@ fn scene_setup(
 ) {
     apples.sprite = Some(assets.load("images/apple.png"));
 
+    commands.spawn_bundle(UiCameraBundle::default());
     commands.spawn_bundle(OrthographicCameraBundle {
         orthographic_projection: OrthographicProjection {
             scaling_mode: ScalingMode::FixedVertical,
@@ -172,6 +180,32 @@ fn scene_setup(
             });
         }
     }
+
+    // fps
+    commands.spawn_bundle(TextBundle {
+        text: Text {
+            sections: vec![TextSection {
+                value: "0.00".to_string(),
+                style: TextStyle {
+                    font: assets.load("fonts/FiraMono-Medium.ttf"),
+                    font_size: 40.0,
+                    color: Color::rgb(1.0, 1.0, 1.0),
+                    ..Default::default()
+                },
+            }],
+            ..Default::default()
+        },
+        style: Style {
+            position_type: PositionType::Absolute,
+            position: Rect {
+                top: Val::Px(10.0),
+                left: Val::Px(10.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    });
 }
 
 fn snake_setup(
@@ -326,7 +360,7 @@ fn snake_system(
         let len = snake.body.len();
         if keys.just_pressed(snake.input_map.shoot) && len > 2 {
             spawn_bullet(head, current_dir, &mut commands, &mut materials, &b);
-            snake.body.remove(len - 1);
+            // snake.body.remove(len - 1);
         }
 
         if timer.0.just_finished() {
@@ -411,16 +445,17 @@ fn bullet_system(
     snake_query: Query<&Snake>,
     mut bullet_query: Query<(&mut Bullet, &mut Mesh2dHandle, Entity)>,
     mut meshes: ResMut<Assets<Mesh>>,
-    timer: Res<MovmentTimer>,
+    time: Res<Time>,
+    mut timer: ResMut<BulletTimer>,
     b: Res<Board>,
     settings: Res<Settings>,
 ) {
+    timer.0.tick(time.delta());
     for (mut bullet, mut mesh_handle, bullet_entity) in bullet_query.iter_mut() {
         if timer.0.just_finished() {
             let new_pos = bullet.pos + bullet.dir * bullet.speed as i32;
             if !in_bounds(new_pos, &b) {
                 commands.entity(bullet_entity).despawn();
-                return;
             }
 
             bullet.pos = new_pos;
@@ -492,5 +527,15 @@ fn get_direction(dir: IVec2) -> Direction {
         [1, 0] => Direction::Right,
         [-1, 0] => Direction::Left,
         _ => panic!("Invalid direction"),
+    }
+}
+
+fn fps_system(diagnostics: Res<Diagnostics>, mut query: Query<&mut Text>) {
+    if let Some(fps) = diagnostics.get(FrameTimeDiagnosticsPlugin::FPS) {
+        if let Some(average) = fps.average() {
+            for mut text in query.iter_mut() {
+                text.sections[0].value = format!("{:.1}", average);
+            }
+        }
     }
 }
