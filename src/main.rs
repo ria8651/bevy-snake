@@ -131,10 +131,6 @@ fn scene_setup(
 ) {
     apples.sprite = Some(assets.load("images/apple.png"));
 
-    spawn_apple(IVec2::new(8, 7), &mut apples, &mut commands, &b);
-    spawn_apple(IVec2::new(10, 7), &mut apples, &mut commands, &b);
-    spawn_apple(IVec2::new(8, 9), &mut apples, &mut commands, &b);
-
     commands.spawn_bundle(OrthographicCameraBundle {
         orthographic_projection: OrthographicProjection {
             scaling_mode: ScalingMode::FixedVertical,
@@ -197,6 +193,13 @@ fn snake_setup(
         head_dir: IVec2::new(0, 0),
         tail_dir: IVec2::new(0, 0),
     };
+    commands
+        .spawn_bundle(MaterialMesh2dBundle {
+            material: materials.add(ColorMaterial::from(Color::rgb(0.0, 0.7, 0.25))),
+            transform: Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0),
+            ..default()
+        })
+        .insert(snake1);
 
     // let snake2 = Snake {
     //     body: Vec::new(),
@@ -211,21 +214,13 @@ fn snake_setup(
     //     head_dir: IVec2::new(-1, 0),
     //     tail_dir: IVec2::new(1, 0),
     // };
-
-    commands
-        .spawn_bundle(MaterialMesh2dBundle {
-            material: materials.add(ColorMaterial::from(Color::rgb(0.0, 0.7, 0.25))),
-            transform: Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0),
-            ..default()
-        })
-        .insert(snake1);
-    //     commands
-    //         .spawn_bundle(MaterialMesh2dBundle {
-    //             material: materials.add(ColorMaterial::from(Color::rgb(0.0, 0.1, 0.7))),
-    //             transform: Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0),
-    //             ..default()
-    //         })
-    //         .insert(snake2);
+    // commands
+    //     .spawn_bundle(MaterialMesh2dBundle {
+    //         material: materials.add(ColorMaterial::from(Color::rgb(0.3, 0.4, 0.7))),
+    //         transform: Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0),
+    //         ..default()
+    //     })
+    //     .insert(snake2);
 }
 
 fn settings_system(mut settings: ResMut<Settings>, keys: Res<Input<KeyCode>>) {
@@ -238,6 +233,8 @@ fn reset_game(
     mut snake_query: Query<&mut Snake>,
     bullet_query: Query<(Entity, With<Bullet>)>,
     mut commands: Commands,
+    mut apples: ResMut<Apples>,
+    b: Res<Board>,
 ) {
     let mut i = 0;
     for mut snake in snake_query.iter_mut() {
@@ -266,6 +263,17 @@ fn reset_game(
 
     for bullet in bullet_query.iter() {
         commands.entity(bullet.0).despawn();
+    }
+    for apple in apples.list.iter().clone() {
+        commands.entity(*apple.1).despawn();
+    }
+
+    apples.list = HashMap::new();
+
+    for _ in 0..3 {
+        let mut rng = rand::thread_rng();
+        let pos = IVec2::new(rng.gen_range(0..b.width), rng.gen_range(0..b.height));
+        spawn_apple(pos, &mut apples, &mut commands, &b);
     }
 }
 
@@ -315,8 +323,10 @@ fn snake_system(
             }
         }
 
-        if keys.just_pressed(snake.input_map.shoot) {
+        let len = snake.body.len();
+        if keys.just_pressed(snake.input_map.shoot) && len > 2 {
             spawn_bullet(head, current_dir, &mut commands, &mut materials, &b);
+            snake.body.remove(len - 1);
         }
 
         if timer.0.just_finished() {
