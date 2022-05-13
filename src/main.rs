@@ -20,6 +20,7 @@ enum GameState {
 
 #[derive(Component)]
 pub struct Snake {
+    id: u32,
     body: Vec<IVec2>,
     input_map: InputMap,
     input_queue: VecDeque<Direction>,
@@ -29,6 +30,7 @@ pub struct Snake {
 
 #[derive(Component)]
 pub struct Bullet {
+    id: u32,
     pos: IVec2,
     dir: IVec2,
     speed: u32,
@@ -36,6 +38,7 @@ pub struct Bullet {
 
 struct Settings {
     interpolation: bool,
+    boom_texture_atlas_handle: Option<Handle<TextureAtlas>>,
 }
 
 struct InputMap {
@@ -55,6 +58,8 @@ struct Board {
 
 struct MovmentTimer(Timer);
 struct BulletTimer(Timer);
+#[derive(Component, Deref, DerefMut)]
+struct AnimationTimer(Timer);
 
 #[derive(PartialEq, Clone, Copy)]
 enum Direction {
@@ -84,6 +89,7 @@ fn main() {
         })
         .insert_resource(Settings {
             interpolation: true,
+            boom_texture_atlas_handle: None,
         })
         .insert_resource(MovmentTimer(movment_timer.clone()))
         .insert_resource(BulletTimer(movment_timer))
@@ -101,7 +107,8 @@ fn main() {
         .add_system_set(
             SystemSet::on_update(GameState::Playing)
                 .with_system(snake_system)
-                .with_system(bullet_system),
+                .with_system(bullet_system)
+                .with_system(animate_explostions),
         )
         .add_system_set(SystemSet::on_enter(GameState::Playing).with_system(reset_game))
         .add_system(fps_system)
@@ -133,10 +140,11 @@ fn scene_setup(
     mut commands: Commands,
     b: Res<Board>,
     mut apples: ResMut<Apples>,
-    assets: Res<AssetServer>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+    asset_server: Res<AssetServer>,
+    mut texture_atlases: ResMut<Assets<TextureAtlas>>,
+    mut settings: ResMut<Settings>,
 ) {
-    apples.sprite = Some(assets.load("images/apple.png"));
+    apples.sprite = Some(asset_server.load("images/apple.png"));
 
     commands.spawn_bundle(UiCameraBundle::default());
     commands.spawn_bundle(OrthographicCameraBundle {
@@ -187,7 +195,7 @@ fn scene_setup(
             sections: vec![TextSection {
                 value: "0.00".to_string(),
                 style: TextStyle {
-                    font: assets.load("fonts/FiraMono-Medium.ttf"),
+                    font: asset_server.load("fonts/FiraMono-Medium.ttf"),
                     font_size: 40.0,
                     color: Color::rgb(1.0, 1.0, 1.0),
                     ..Default::default()
@@ -206,15 +214,20 @@ fn scene_setup(
         },
         ..Default::default()
     });
+
+    let texture_handle = asset_server.load("images/spritesheet.png");
+    let texture_atlas = TextureAtlas::from_grid(texture_handle, Vec2::new(512.0, 512.0), 31, 1);
+    let texture_atlas_handle = texture_atlases.add(texture_atlas);
+    settings.boom_texture_atlas_handle = Some(texture_atlas_handle);
 }
 
 fn snake_setup(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     b: Res<Board>,
 ) {
     let snake1 = Snake {
+        id: 0,
         body: Vec::new(),
         input_map: InputMap {
             up: KeyCode::W,
@@ -236,6 +249,7 @@ fn snake_setup(
         .insert(snake1);
 
     // let snake2 = Snake {
+    //     id: 1,
     //     body: Vec::new(),
     //     input_map: InputMap {
     //         up: KeyCode::Up,
@@ -270,29 +284,26 @@ fn reset_game(
     mut apples: ResMut<Apples>,
     b: Res<Board>,
 ) {
-    let mut i = 0;
     for mut snake in snake_query.iter_mut() {
-        if i == 0 {
-            snake.body = vec![
-                IVec2::new(4, 1),
-                IVec2::new(3, 1),
-                IVec2::new(2, 1),
-                IVec2::new(1, 1),
-            ];
-            snake.head_dir = IVec2::new(1, 0);
-            snake.tail_dir = IVec2::new(-1, 0);
-        } else if i == 1 {
+        if snake.id == 0 {
             snake.body = vec![
                 IVec2::new(12, 13),
                 IVec2::new(13, 13),
                 IVec2::new(14, 13),
                 IVec2::new(15, 13),
             ];
+            snake.head_dir = IVec2::new(1, 0);
+            snake.tail_dir = IVec2::new(-1, 0);
+        } else if snake.id == 1 {
+            snake.body = vec![
+                IVec2::new(4, 1),
+                IVec2::new(3, 1),
+                IVec2::new(2, 1),
+                IVec2::new(1, 1),
+            ];
             snake.head_dir = IVec2::new(-1, 0);
             snake.tail_dir = IVec2::new(1, 0);
         }
-
-        i += 1;
     }
 
     for bullet in bullet_query.iter() {
@@ -359,8 +370,15 @@ fn snake_system(
 
         let len = snake.body.len();
         if keys.just_pressed(snake.input_map.shoot) && len > 2 {
-            spawn_bullet(head, current_dir, &mut commands, &mut materials, &b);
-            // snake.body.remove(len - 1);
+            spawn_bullet(
+                snake.id,
+                head,
+                current_dir,
+                &mut commands,
+                &mut materials,
+                &b,
+            );
+            snake.body.remove(len - 1);
         }
 
         if timer.0.just_finished() {
@@ -380,6 +398,8 @@ fn snake_system(
             } else {
                 let len = snake.body.len();
                 snake.tail_dir = snake.body[len - 2] - snake.body[len - 1];
+
+                // Shrink Snake
                 snake.body.remove(len - 1);
             }
         }
@@ -408,8 +428,12 @@ fn snake_system(
             }
 
             for (other_snake, _) in snake_query.iter() {
-                for snake_body in other_snake.body.iter().skip(1) {
-                    if *snake_body == new_head {
+                for i in 0..other_snake.body.len() {
+                    if snake.id == other_snake.id && i == 0 {
+                        continue;
+                    }
+
+                    if other_snake.body[i] == new_head {
                         app_state.set(GameState::Paused).unwrap();
                         return;
                     }
@@ -442,23 +466,58 @@ fn snake_system(
 
 fn bullet_system(
     mut commands: Commands,
-    snake_query: Query<&Snake>,
+    mut snake_query: Query<&mut Snake>,
     mut bullet_query: Query<(&mut Bullet, &mut Mesh2dHandle, Entity)>,
     mut meshes: ResMut<Assets<Mesh>>,
     time: Res<Time>,
     mut timer: ResMut<BulletTimer>,
     b: Res<Board>,
     settings: Res<Settings>,
+    mut apples: ResMut<Apples>,
+    mut app_state: ResMut<State<GameState>>,
 ) {
     timer.0.tick(time.delta());
-    for (mut bullet, mut mesh_handle, bullet_entity) in bullet_query.iter_mut() {
+    'outer: for (mut bullet, mut mesh_handle, bullet_entity) in bullet_query.iter_mut() {
         if timer.0.just_finished() {
-            let new_pos = bullet.pos + bullet.dir * bullet.speed as i32;
-            if !in_bounds(new_pos, &b) {
-                commands.entity(bullet_entity).despawn();
+            for i in 0..=bullet.speed {
+                let pos = bullet.pos + bullet.dir * i as i32;
+
+                if !in_bounds(pos, &b) {
+                    boom(&mut commands, &settings, pos, &b);
+                    commands.entity(bullet_entity).despawn();
+                    continue 'outer;
+                }
+
+                for mut snake in snake_query.iter_mut() {
+                    for j in 0..snake.body.len() {
+                        if snake.body[j] == pos {
+                            if j < 2 {
+                                if snake.id == bullet.id {
+                                    continue;
+                                }
+
+                                // Headshot
+                                app_state.set(GameState::Paused).unwrap();
+                                return;
+                            }
+
+                            boom(&mut commands, &settings, pos, &b);
+                            commands.entity(bullet_entity).despawn();
+
+                            for _ in j..snake.body.len() {
+                                let pos = snake.body[j];
+                                snake.body.remove(j);
+                                spawn_apple(pos, &mut apples, &mut commands, &b);
+                            }
+
+                            continue 'outer;
+                        }
+                    }
+                }
             }
 
-            bullet.pos = new_pos;
+            let pos = bullet.pos + bullet.dir * bullet.speed as i32;
+            bullet.pos = pos;
         }
 
         let interpolation = if settings.interpolation {
@@ -490,13 +549,19 @@ fn spawn_apple(pos: IVec2, apples: &mut Apples, commands: &mut Commands, b: &Boa
 }
 
 fn spawn_bullet(
+    id: u32,
     pos: IVec2,
     dir: IVec2,
     commands: &mut Commands,
     materials: &mut ResMut<Assets<ColorMaterial>>,
     b: &Board,
 ) {
-    let bullet = Bullet { pos, dir, speed: 2 };
+    let bullet = Bullet {
+        id,
+        pos,
+        dir,
+        speed: 2,
+    };
     commands
         .spawn_bundle(MaterialMesh2dBundle {
             material: materials.add(ColorMaterial::from(Color::rgb(1.0, 1.0, 0.26))),
@@ -504,6 +569,44 @@ fn spawn_bullet(
             ..default()
         })
         .insert(bullet);
+}
+
+fn boom(commands: &mut Commands, settings: &Settings, pos: IVec2, b: &Board) {
+    commands
+        .spawn_bundle(SpriteSheetBundle {
+            texture_atlas: settings.boom_texture_atlas_handle.as_ref().unwrap().clone(),
+            transform: Transform::from_xyz(
+                pos.x as f32 - b.width as f32 / 2.0 + 0.5,
+                pos.y as f32 - b.height as f32 / 2.0 + 0.5,
+                12.0,
+            )
+            .with_scale(Vec3::new(0.01, 0.01, 1.0)),
+            ..default()
+        })
+        .insert(AnimationTimer(Timer::from_seconds(0.04, true)));
+}
+
+fn animate_explostions(
+    mut commands: Commands,
+    time: Res<Time>,
+    texture_atlases: Res<Assets<TextureAtlas>>,
+    mut query: Query<(
+        &mut AnimationTimer,
+        &mut TextureAtlasSprite,
+        &Handle<TextureAtlas>,
+        Entity,
+    )>,
+) {
+    for (mut timer, mut sprite, texture_atlas_handle, entity) in query.iter_mut() {
+        timer.tick(time.delta());
+        if timer.just_finished() {
+            let texture_atlas = texture_atlases.get(texture_atlas_handle).unwrap();
+            sprite.index = sprite.index + 1;
+            if sprite.index >= texture_atlas.textures.len() {
+                commands.entity(entity).despawn();
+            }
+        }
+    }
 }
 
 fn in_bounds(pos: IVec2, b: &Board) -> bool {
