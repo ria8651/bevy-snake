@@ -4,6 +4,7 @@ use bevy::{
     render::{camera::ScalingMode, mesh::PrimitiveTopology},
     sprite::{MaterialMesh2dBundle, Mesh2dHandle},
 };
+use bevy_kira_audio::{Audio, AudioPlugin, AudioSource};
 use rand::Rng;
 use std::collections::{HashMap, VecDeque};
 
@@ -39,6 +40,7 @@ pub struct Bullet {
 struct Settings {
     interpolation: bool,
     boom_texture_atlas_handle: Option<Handle<TextureAtlas>>,
+    boom_sound_handle: Option<Handle<AudioSource>>,
 }
 
 struct InputMap {
@@ -73,7 +75,14 @@ const DIR: [[i32; 2]; 4] = [[0, 1], [0, -1], [-1, 0], [1, 0]];
 
 struct Apples {
     list: HashMap<IVec2, Entity>,
+    apples_to_spawn: Vec<AppleSpawn>,
     sprite: Option<Handle<Image>>,
+}
+
+#[derive(Copy, Clone)]
+enum AppleSpawn {
+    Random,
+    Pos(IVec2),
 }
 
 fn main() {
@@ -81,6 +90,7 @@ fn main() {
 
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugin(AudioPlugin)
         .insert_resource(Board {
             width: 17,
             height: 15,
@@ -90,17 +100,20 @@ fn main() {
         .insert_resource(Settings {
             interpolation: true,
             boom_texture_atlas_handle: None,
+            boom_sound_handle: None,
         })
         .insert_resource(MovmentTimer(movment_timer.clone()))
         .insert_resource(BulletTimer(movment_timer))
         .insert_resource(Apples {
             list: HashMap::new(),
+            apples_to_spawn: Vec::new(),
             sprite: None,
         })
         .add_system(bevy::input::system::exit_on_esc_system)
         .add_plugin(FrameTimeDiagnosticsPlugin::default())
         .add_startup_system(scene_setup)
         .add_startup_system(snake_setup)
+        .add_startup_system(reset_game)
         .add_system(state_controller)
         .add_system(settings_system)
         .add_state(GameState::Menu)
@@ -108,6 +121,7 @@ fn main() {
             SystemSet::on_update(GameState::Playing)
                 .with_system(snake_system)
                 .with_system(bullet_system)
+                .with_system(spawn_apples)
                 .with_system(animate_explostions),
         )
         .add_system_set(SystemSet::on_enter(GameState::Playing).with_system(reset_game))
@@ -120,12 +134,12 @@ fn state_controller(mut game_state: ResMut<State<GameState>>, keys: Res<Input<Ke
         GameState::Menu => game_state.set(GameState::Playing).unwrap(),
         GameState::Playing => {
             if keys.just_pressed(KeyCode::P) {
-                game_state.set(GameState::Paused).unwrap()
+                game_state.push(GameState::Paused).unwrap()
             }
         }
         GameState::Paused => {
             if keys.just_pressed(KeyCode::P) {
-                game_state.set(GameState::Playing).unwrap()
+                game_state.pop().unwrap()
             }
         }
         GameState::GameOver => {
@@ -143,6 +157,7 @@ fn scene_setup(
     asset_server: Res<AssetServer>,
     mut texture_atlases: ResMut<Assets<TextureAtlas>>,
     mut settings: ResMut<Settings>,
+    audio: Res<Audio>,
 ) {
     apples.sprite = Some(asset_server.load("images/apple.png"));
 
@@ -219,6 +234,12 @@ fn scene_setup(
     let texture_atlas = TextureAtlas::from_grid(texture_handle, Vec2::new(512.0, 512.0), 31, 1);
     let texture_atlas_handle = texture_atlases.add(texture_atlas);
     settings.boom_texture_atlas_handle = Some(texture_atlas_handle);
+
+    settings.boom_sound_handle = Some(asset_server.load("sounds/boom.ogg"));
+
+    // song
+    let music = asset_server.load("sounds/song.ogg");
+    audio.play_looped(music);
 }
 
 fn snake_setup(
@@ -282,7 +303,6 @@ fn reset_game(
     bullet_query: Query<(Entity, With<Bullet>)>,
     mut commands: Commands,
     mut apples: ResMut<Apples>,
-    b: Res<Board>,
 ) {
     for mut snake in snake_query.iter_mut() {
         if snake.id == 0 {
@@ -314,12 +334,7 @@ fn reset_game(
     }
 
     apples.list = HashMap::new();
-
-    for _ in 0..3 {
-        let mut rng = rand::thread_rng();
-        let pos = IVec2::new(rng.gen_range(0..b.width), rng.gen_range(0..b.height));
-        spawn_apple(pos, &mut apples, &mut commands, &b);
-    }
+    apples.apples_to_spawn = vec![AppleSpawn::Random; 3];
 }
 
 fn snake_system(
@@ -337,7 +352,6 @@ fn snake_system(
 ) {
     timer.0.tick(time.delta());
 
-    let mut num_apples_to_spawn = 0;
     for (mut snake, mut mesh_handle) in snake_query.iter_mut() {
         let head = snake.body[0];
         let neck = snake.body[1];
@@ -394,7 +408,7 @@ fn snake_system(
                 commands.entity(*apple_entity).despawn();
                 apples.list.remove(&head);
 
-                num_apples_to_spawn += 1;
+                apples.apples_to_spawn.push(AppleSpawn::Random);
             } else {
                 let len = snake.body.len();
                 snake.tail_dir = snake.body[len - 2] - snake.body[len - 1];
@@ -423,7 +437,7 @@ fn snake_system(
         for (snake, _) in snake_query.iter() {
             let new_head = snake.body[0];
             if !in_bounds(new_head, &b) {
-                app_state.set(GameState::Paused).unwrap();
+                app_state.set(GameState::GameOver).unwrap();
                 return;
             }
 
@@ -434,32 +448,11 @@ fn snake_system(
                     }
 
                     if other_snake.body[i] == new_head {
-                        app_state.set(GameState::Paused).unwrap();
+                        app_state.set(GameState::GameOver).unwrap();
                         return;
                     }
                 }
             }
-        }
-    }
-
-    let mut rng = rand::thread_rng();
-    let mut count = 0;
-    'outer: while num_apples_to_spawn > 0 {
-        let pos = IVec2::new(rng.gen_range(0..b.width), rng.gen_range(0..b.height));
-        if !apples.list.contains_key(&pos) {
-            for (snake, _) in snake_query.iter() {
-                if snake.body.contains(&pos) {
-                    continue 'outer;
-                }
-            }
-
-            spawn_apple(pos, &mut apples, &mut commands, &b);
-            num_apples_to_spawn -= 1;
-        }
-
-        count += 1;
-        if count > 1000 {
-            break 'outer;
         }
     }
 }
@@ -475,6 +468,7 @@ fn bullet_system(
     settings: Res<Settings>,
     mut apples: ResMut<Apples>,
     mut app_state: ResMut<State<GameState>>,
+    audio: Res<Audio>,
 ) {
     timer.0.tick(time.delta());
     'outer: for (mut bullet, mut mesh_handle, bullet_entity) in bullet_query.iter_mut() {
@@ -483,7 +477,7 @@ fn bullet_system(
                 let pos = bullet.pos + bullet.dir * i as i32;
 
                 if !in_bounds(pos, &b) {
-                    boom(&mut commands, &settings, pos, &b);
+                    boom(&mut commands, &settings, &audio, pos, &b);
                     commands.entity(bullet_entity).despawn();
                     continue 'outer;
                 }
@@ -497,17 +491,17 @@ fn bullet_system(
                                 }
 
                                 // Headshot
-                                app_state.set(GameState::Paused).unwrap();
+                                app_state.set(GameState::GameOver).unwrap();
                                 return;
                             }
 
-                            boom(&mut commands, &settings, pos, &b);
+                            boom(&mut commands, &settings, &audio, pos, &b);
                             commands.entity(bullet_entity).despawn();
 
                             for _ in j..snake.body.len() {
                                 let pos = snake.body[j];
                                 snake.body.remove(j);
-                                spawn_apple(pos, &mut apples, &mut commands, &b);
+                                apples.apples_to_spawn.push(AppleSpawn::Pos(pos));
                             }
 
                             continue 'outer;
@@ -530,22 +524,59 @@ fn bullet_system(
     }
 }
 
-fn spawn_apple(pos: IVec2, apples: &mut Apples, commands: &mut Commands, b: &Board) {
-    apples.list.insert(
-        pos,
-        commands
-            .spawn_bundle(SpriteBundle {
-                texture: apples.sprite.as_ref().unwrap().clone(),
-                transform: Transform::from_xyz(
-                    pos.x as f32 - b.width as f32 / 2.0 + 0.5,
-                    pos.y as f32 - b.height as f32 / 2.0 + 0.5,
-                    5.0,
-                )
-                .with_scale(Vec3::splat(1.0 / 512.0)),
-                ..default()
-            })
-            .id(),
-    );
+fn spawn_apples(
+    mut apples: ResMut<Apples>,
+    snake_query: Query<&Snake>,
+    mut commands: Commands,
+    b: Res<Board>,
+) {
+    let mut rng = rand::thread_rng();
+    let mut count = 0;
+
+    'outer: while let Some(apple) = apples.apples_to_spawn.pop() {
+        let mut pos;
+        loop {
+            pos = if let AppleSpawn::Pos(pos) = apple {
+                pos
+            } else {
+                IVec2::new(rng.gen_range(0..b.width), rng.gen_range(0..b.height))
+            };
+
+            count += 1;
+            if count > 1000 {
+                break 'outer;
+            }
+
+            if apples.list.contains_key(&pos) {
+                continue;
+            }
+
+            for snake in snake_query.iter() {
+                if snake.body.contains(&pos) {
+                    continue;
+                }
+            }
+
+            break;
+        }
+
+        let texture = apples.sprite.as_ref().unwrap().clone();
+        apples.list.insert(
+            pos,
+            commands
+                .spawn_bundle(SpriteBundle {
+                    texture: texture,
+                    transform: Transform::from_xyz(
+                        pos.x as f32 - b.width as f32 / 2.0 + 0.5,
+                        pos.y as f32 - b.height as f32 / 2.0 + 0.5,
+                        5.0,
+                    )
+                    .with_scale(Vec3::splat(1.0 / 512.0)),
+                    ..default()
+                })
+                .id(),
+        );
+    }
 }
 
 fn spawn_bullet(
@@ -571,7 +602,7 @@ fn spawn_bullet(
         .insert(bullet);
 }
 
-fn boom(commands: &mut Commands, settings: &Settings, pos: IVec2, b: &Board) {
+fn boom(commands: &mut Commands, settings: &Settings, audio: &Audio, pos: IVec2, b: &Board) {
     commands
         .spawn_bundle(SpriteSheetBundle {
             texture_atlas: settings.boom_texture_atlas_handle.as_ref().unwrap().clone(),
@@ -584,6 +615,8 @@ fn boom(commands: &mut Commands, settings: &Settings, pos: IVec2, b: &Board) {
             ..default()
         })
         .insert(AnimationTimer(Timer::from_seconds(0.04, true)));
+
+    audio.play(settings.boom_sound_handle.as_ref().unwrap().clone());
 }
 
 fn animate_explostions(
