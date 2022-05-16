@@ -334,7 +334,7 @@ fn reset_game(
     }
 
     apples.list = HashMap::new();
-    apples.apples_to_spawn = vec![AppleSpawn::Random; 3];
+    apples.apples_to_spawn = vec![AppleSpawn::Random; 255];
 }
 
 fn snake_system(
@@ -531,11 +531,11 @@ fn spawn_apples(
     b: Res<Board>,
 ) {
     let mut rng = rand::thread_rng();
-    let mut count = 0;
-
-    'outer: while let Some(apple) = apples.apples_to_spawn.pop() {
+    
+    while let Some(apple) = apples.apples_to_spawn.pop() {
         let mut pos;
-        loop {
+        let mut count = 0;
+        'inner: loop {
             pos = if let AppleSpawn::Pos(pos) = apple {
                 pos
             } else {
@@ -544,16 +544,16 @@ fn spawn_apples(
 
             count += 1;
             if count > 1000 {
-                break 'outer;
+                return;
             }
 
             if apples.list.contains_key(&pos) {
-                continue;
+                continue 'inner;
             }
 
             for snake in snake_query.iter() {
                 if snake.body.contains(&pos) {
-                    continue;
+                    continue 'inner;
                 }
             }
 
