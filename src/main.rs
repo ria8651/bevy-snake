@@ -39,6 +39,7 @@ pub struct Bullet {
 
 struct Settings {
     interpolation: bool,
+    tick_speed: f32,
     boom_texture_atlas_handle: Option<Handle<TextureAtlas>>,
     boom_sound_handle: Option<Handle<AudioSource>>,
 }
@@ -60,6 +61,7 @@ struct Board {
 
 struct MovmentTimer(Timer);
 struct BulletTimer(Timer);
+struct GameTimer(Timer);
 #[derive(Component, Deref, DerefMut)]
 struct AnimationTimer(Timer);
 
@@ -86,7 +88,7 @@ enum AppleSpawn {
 }
 
 fn main() {
-    let movment_timer = Timer::from_seconds(1.0 / 8.0, true);
+    let movment_timer = Timer::from_seconds(1.0 / 4.0, true);
 
     App::new()
         .add_plugins(DefaultPlugins)
@@ -99,11 +101,13 @@ fn main() {
         })
         .insert_resource(Settings {
             interpolation: true,
+            tick_speed: 0.0,
             boom_texture_atlas_handle: None,
             boom_sound_handle: None,
         })
         .insert_resource(MovmentTimer(movment_timer.clone()))
         .insert_resource(BulletTimer(movment_timer))
+        .insert_resource(GameTimer(Timer::from_seconds(99999.0, false)))
         .insert_resource(Apples {
             list: HashMap::new(),
             apples_to_spawn: Vec::new(),
@@ -122,7 +126,8 @@ fn main() {
                 .with_system(snake_system)
                 .with_system(bullet_system)
                 .with_system(spawn_apples)
-                .with_system(animate_explostions),
+                .with_system(animate_explostions)
+                .with_system(game_progress),
         )
         .add_system_set(SystemSet::on_enter(GameState::Playing).with_system(reset_game))
         .add_system(fps_system)
@@ -148,6 +153,14 @@ fn state_controller(mut game_state: ResMut<State<GameState>>, keys: Res<Input<Ke
             }
         }
     }
+}
+
+fn game_progress(mut settings: ResMut<Settings>, time: Res<Time>, mut game_timer: ResMut<GameTimer>) {
+    game_timer.0.tick(time.delta());
+
+    settings.tick_speed = 1.0 / (game_timer.0.elapsed_secs().max(0.001).min(1.0 / 8.0) * 0.4 + 5.0);
+
+    println!("{}", game_timer.0.elapsed_secs());
 }
 
 fn scene_setup(
@@ -303,6 +316,7 @@ fn reset_game(
     bullet_query: Query<(Entity, With<Bullet>)>,
     mut commands: Commands,
     mut apples: ResMut<Apples>,
+    mut game_timer: ResMut<GameTimer>,
 ) {
     for mut snake in snake_query.iter_mut() {
         if snake.id == 0 {
@@ -334,7 +348,9 @@ fn reset_game(
     }
 
     apples.list = HashMap::new();
-    apples.apples_to_spawn = vec![AppleSpawn::Random; 255];
+    apples.apples_to_spawn = vec![AppleSpawn::Random; 3];
+
+    game_timer.0.reset();
 }
 
 fn snake_system(
@@ -350,6 +366,8 @@ fn snake_system(
     mut materials: ResMut<Assets<ColorMaterial>>,
     settings: Res<Settings>,
 ) {
+    use std::time::Duration;
+    timer.0.set_duration(Duration::from_secs_f32(settings.tick_speed + 0.001));
     timer.0.tick(time.delta());
 
     for (mut snake, mut mesh_handle) in snake_query.iter_mut() {
