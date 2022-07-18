@@ -25,8 +25,29 @@ pub struct Snake {
     body: Vec<IVec2>,
     input_map: InputMap,
     input_queue: VecDeque<Direction>,
+    deaths: u32,
     head_dir: IVec2,
     tail_dir: IVec2,
+}
+
+impl Default for Snake {
+    fn default() -> Self {
+        Snake {
+            id: 0,
+            body: Vec::new(),
+            input_map: InputMap {
+                up: KeyCode::W,
+                down: KeyCode::S,
+                left: KeyCode::A,
+                right: KeyCode::D,
+                shoot: KeyCode::R,
+            },
+            input_queue: VecDeque::new(),
+            deaths: 0,
+            head_dir: IVec2::new(0, 0),
+            tail_dir: IVec2::new(0, 0),
+        }
+    }
 }
 
 #[derive(Component)]
@@ -39,11 +60,12 @@ pub struct Bullet {
 
 struct Settings {
     interpolation: bool,
-    tick_speed: f32,
+    tps: f32,
     boom_texture_atlas_handle: Option<Handle<TextureAtlas>>,
     boom_sound_handle: Option<Handle<AudioSource>>,
 }
 
+#[derive(Clone, Copy)]
 struct InputMap {
     up: KeyCode,
     down: KeyCode,
@@ -101,7 +123,7 @@ fn main() {
         })
         .insert_resource(Settings {
             interpolation: true,
-            tick_speed: 0.0,
+            tps: 8.0,
             boom_texture_atlas_handle: None,
             boom_sound_handle: None,
         })
@@ -116,7 +138,6 @@ fn main() {
         .add_system(bevy::input::system::exit_on_esc_system)
         .add_plugin(FrameTimeDiagnosticsPlugin::default())
         .add_startup_system(scene_setup)
-        .add_startup_system(snake_setup)
         .add_startup_system(reset_game)
         .add_system(state_controller)
         .add_system(settings_system)
@@ -155,12 +176,14 @@ fn state_controller(mut game_state: ResMut<State<GameState>>, keys: Res<Input<Ke
     }
 }
 
-fn game_progress(mut settings: ResMut<Settings>, time: Res<Time>, mut game_timer: ResMut<GameTimer>) {
+fn game_progress(
+    mut settings: ResMut<Settings>,
+    time: Res<Time>,
+    mut game_timer: ResMut<GameTimer>,
+) {
     game_timer.0.tick(time.delta());
 
-    settings.tick_speed = 1.0 / (game_timer.0.elapsed_secs().max(0.001).min(1.0 / 8.0) * 0.4 + 5.0);
-
-    println!("{}", game_timer.0.elapsed_secs());
+    settings.tps = (game_timer.0.elapsed_secs() * 0.1 + 5.0).clamp(5.0, 8.0);
 }
 
 fn scene_setup(
@@ -255,56 +278,6 @@ fn scene_setup(
     audio.play_looped(music);
 }
 
-fn snake_setup(
-    mut commands: Commands,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    b: Res<Board>,
-) {
-    let snake1 = Snake {
-        id: 0,
-        body: Vec::new(),
-        input_map: InputMap {
-            up: KeyCode::W,
-            down: KeyCode::S,
-            left: KeyCode::A,
-            right: KeyCode::D,
-            shoot: KeyCode::R,
-        },
-        input_queue: VecDeque::new(),
-        head_dir: IVec2::new(0, 0),
-        tail_dir: IVec2::new(0, 0),
-    };
-    commands
-        .spawn_bundle(MaterialMesh2dBundle {
-            material: materials.add(ColorMaterial::from(Color::rgb(0.0, 0.7, 0.25))),
-            transform: Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0),
-            ..default()
-        })
-        .insert(snake1);
-
-    // let snake2 = Snake {
-    //     id: 1,
-    //     body: Vec::new(),
-    //     input_map: InputMap {
-    //         up: KeyCode::Up,
-    //         down: KeyCode::Down,
-    //         left: KeyCode::Left,
-    //         right: KeyCode::Right,
-    //         shoot: KeyCode::M,
-    //     },
-    //     input_queue: VecDeque::new(),
-    //     head_dir: IVec2::new(-1, 0),
-    //     tail_dir: IVec2::new(1, 0),
-    // };
-    // commands
-    //     .spawn_bundle(MaterialMesh2dBundle {
-    //         material: materials.add(ColorMaterial::from(Color::rgb(0.3, 0.4, 0.7))),
-    //         transform: Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0),
-    //         ..default()
-    //     })
-    //     .insert(snake2);
-}
-
 fn settings_system(mut settings: ResMut<Settings>, keys: Res<Input<KeyCode>>) {
     if keys.just_pressed(KeyCode::I) {
         settings.interpolation = !settings.interpolation;
@@ -312,36 +285,20 @@ fn settings_system(mut settings: ResMut<Settings>, keys: Res<Input<KeyCode>>) {
 }
 
 fn reset_game(
-    mut snake_query: Query<&mut Snake>,
-    bullet_query: Query<(Entity, With<Bullet>)>,
+    snake_query: Query<Entity, With<Snake>>,
+    bullet_query: Query<Entity, With<Bullet>>,
     mut commands: Commands,
     mut apples: ResMut<Apples>,
     mut game_timer: ResMut<GameTimer>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    b: Res<Board>,
 ) {
-    for mut snake in snake_query.iter_mut() {
-        if snake.id == 0 {
-            snake.body = vec![
-                IVec2::new(12, 13),
-                IVec2::new(13, 13),
-                IVec2::new(14, 13),
-                IVec2::new(15, 13),
-            ];
-            snake.head_dir = IVec2::new(1, 0);
-            snake.tail_dir = IVec2::new(-1, 0);
-        } else if snake.id == 1 {
-            snake.body = vec![
-                IVec2::new(4, 1),
-                IVec2::new(3, 1),
-                IVec2::new(2, 1),
-                IVec2::new(1, 1),
-            ];
-            snake.head_dir = IVec2::new(-1, 0);
-            snake.tail_dir = IVec2::new(1, 0);
-        }
+    for snake_entity in snake_query.iter() {
+        commands.entity(snake_entity).despawn();
     }
 
-    for bullet in bullet_query.iter() {
-        commands.entity(bullet.0).despawn();
+    for bullet_entity in bullet_query.iter() {
+        commands.entity(bullet_entity).despawn();
     }
     for apple in apples.list.iter().clone() {
         commands.entity(*apple.1).despawn();
@@ -351,6 +308,87 @@ fn reset_game(
     apples.apples_to_spawn = vec![AppleSpawn::Random; 3];
 
     game_timer.0.reset();
+
+    // spawn in new snakes
+    let snake_colours = [
+        Color::rgb(0.0, 0.7, 0.25),
+        Color::rgb(0.3, 0.4, 0.7),
+        Color::rgb(0.7, 0.4, 0.3),
+        Color::rgb(0.7, 0.7, 0.7),
+    ];
+    let snake_controls = [
+        InputMap {
+            up: KeyCode::W,
+            down: KeyCode::S,
+            left: KeyCode::A,
+            right: KeyCode::D,
+            shoot: KeyCode::LShift,
+        },
+        InputMap {
+            up: KeyCode::Up,
+            down: KeyCode::Down,
+            left: KeyCode::Left,
+            right: KeyCode::Right,
+            shoot: KeyCode::RAlt,
+        },
+        InputMap {
+            up: KeyCode::P,
+            down: KeyCode::Semicolon,
+            left: KeyCode::L,
+            right: KeyCode::Apostrophe,
+            shoot: KeyCode::Backslash,
+        },
+        InputMap {
+            up: KeyCode::Y,
+            down: KeyCode::H,
+            left: KeyCode::G,
+            right: KeyCode::J,
+            shoot: KeyCode::B,
+        },
+    ];
+    let positions = [
+        vec![
+            IVec2::new(12, 13),
+            IVec2::new(13, 13),
+            IVec2::new(14, 13),
+            IVec2::new(15, 13),
+        ],
+        vec![
+            IVec2::new(4, 1),
+            IVec2::new(3, 1),
+            IVec2::new(2, 1),
+            IVec2::new(1, 1),
+        ],
+        vec![
+            IVec2::new(12, 10),
+            IVec2::new(13, 10),
+            IVec2::new(14, 10),
+            IVec2::new(15, 10),
+        ],
+        vec![
+            IVec2::new(4, 4),
+            IVec2::new(3, 4),
+            IVec2::new(2, 4),
+            IVec2::new(1, 4),
+        ],
+    ];
+
+    let transform = Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0);
+
+    for i in 0..4 {
+        commands
+            .spawn_bundle(MaterialMesh2dBundle {
+                material: materials.add(ColorMaterial::from(snake_colours[i])),
+                transform,
+                ..default()
+            })
+            .insert(Snake {
+                id: i as u32,
+                body: positions[i].clone(),
+                input_map: snake_controls[i],
+                ..Default::default()
+            });
+    }
 }
 
 fn snake_system(
@@ -366,8 +404,9 @@ fn snake_system(
     mut materials: ResMut<Assets<ColorMaterial>>,
     settings: Res<Settings>,
 ) {
-    use std::time::Duration;
-    timer.0.set_duration(Duration::from_secs_f32(settings.tick_speed + 0.001));
+    timer
+        .0
+        .set_duration(std::time::Duration::from_secs_f32(1.0 / settings.tps));
     timer.0.tick(time.delta());
 
     for (mut snake, mut mesh_handle) in snake_query.iter_mut() {
@@ -477,7 +516,7 @@ fn snake_system(
 
 fn bullet_system(
     mut commands: Commands,
-    mut snake_query: Query<&mut Snake>,
+    mut snake_query: Query<(&mut Snake, Entity)>,
     mut bullet_query: Query<(&mut Bullet, &mut Mesh2dHandle, Entity)>,
     mut meshes: ResMut<Assets<Mesh>>,
     time: Res<Time>,
@@ -488,7 +527,12 @@ fn bullet_system(
     mut app_state: ResMut<State<GameState>>,
     audio: Res<Audio>,
 ) {
+    use std::time::Duration;
+    timer
+        .0
+        .set_duration(Duration::from_secs_f32(1.0 / settings.tps));
     timer.0.tick(time.delta());
+
     'outer: for (mut bullet, mut mesh_handle, bullet_entity) in bullet_query.iter_mut() {
         if timer.0.just_finished() {
             for i in 0..=bullet.speed {
@@ -500,19 +544,17 @@ fn bullet_system(
                     continue 'outer;
                 }
 
-                for mut snake in snake_query.iter_mut() {
+                for (mut snake, snake_entity) in snake_query.iter_mut() {
                     for j in 0..snake.body.len() {
                         if snake.body[j] == pos {
+                            // Headshot
                             if j < 2 {
                                 if snake.id == bullet.id {
                                     continue;
                                 }
 
-                                // Headshot
-                                app_state.set(GameState::GameOver).unwrap();
-                                return;
-                            }
-
+                                commands.entity(snake_entity).despawn();
+                            };
                             boom(&mut commands, &settings, &audio, pos, &b);
                             commands.entity(bullet_entity).despawn();
 
@@ -549,7 +591,7 @@ fn spawn_apples(
     b: Res<Board>,
 ) {
     let mut rng = rand::thread_rng();
-    
+
     while let Some(apple) = apples.apples_to_spawn.pop() {
         let mut pos;
         let mut count = 0;
