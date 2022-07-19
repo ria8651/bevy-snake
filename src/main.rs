@@ -14,6 +14,7 @@ use std::collections::{HashMap, VecDeque};
 mod effects;
 mod meshing;
 mod snake;
+mod fps_counter;
 
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 pub enum GameState {
@@ -98,8 +99,8 @@ fn main() {
             apples_to_spawn: Vec::new(),
             sprite: None,
         })
+        .add_plugin(fps_counter::FpsCounter)
         .add_system(bevy::input::system::exit_on_esc_system)
-        .add_plugin(FrameTimeDiagnosticsPlugin::default())
         .add_plugin(effects::EffectsPlugin)
         .add_plugin(snake::SnakePlugin)
         .add_event::<ExplosionEv>()
@@ -116,7 +117,6 @@ fn main() {
                 .with_system(spawn_apples)
         )
         .add_system_set(SystemSet::on_enter(GameState::Playing).with_system(reset_game))
-        .add_system(fps_system)
         .run();
 }
 
@@ -207,32 +207,6 @@ fn scene_setup(
             });
         }
     }
-
-    // fps
-    commands.spawn_bundle(TextBundle {
-        text: Text {
-            sections: vec![TextSection {
-                value: "0.00".to_string(),
-                style: TextStyle {
-                    font: asset_server.load("fonts/FiraMono-Medium.ttf"),
-                    font_size: 40.0,
-                    color: Color::rgb(1.0, 1.0, 1.0),
-                    ..Default::default()
-                },
-            }],
-            ..Default::default()
-        },
-        style: Style {
-            position_type: PositionType::Absolute,
-            position: Rect {
-                top: Val::Px(10.0),
-                left: Val::Px(10.0),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        ..Default::default()
-    });
 
     let texture_handle = asset_server.load("images/spritesheet.png");
     let texture_atlas = TextureAtlas::from_grid(texture_handle, Vec2::new(512.0, 512.0), 31, 1);
@@ -343,7 +317,7 @@ fn reset_game(
 
     let transform = Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0);
 
-    for i in 0..2 {
+    for i in 0..4 {
         commands
             .spawn_bundle(MaterialMesh2dBundle {
                 material: materials.add(ColorMaterial::from(snake_colours[i])),
@@ -491,15 +465,5 @@ fn calculate_flip(dir: IVec2) -> IVec2 {
         [1, 0] => IVec2::new(1, 1),
         [-1, 0] => IVec2::new(-1, 1),
         _ => IVec2::new(1, 1),
-    }
-}
-
-fn fps_system(diagnostics: Res<Diagnostics>, mut query: Query<&mut Text>) {
-    if let Some(fps) = diagnostics.get(FrameTimeDiagnosticsPlugin::FPS) {
-        if let Some(average) = fps.average() {
-            for mut text in query.iter_mut() {
-                text.sections[0].value = format!("{:.1}", average);
-            }
-        }
     }
 }

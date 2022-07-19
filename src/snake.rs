@@ -112,12 +112,14 @@ pub fn snake_system(
         }
 
         if timer.0.just_finished() {
-            if let Some(direction) = snake.input_queue.pop_front() {
+            let new_head = if let Some(direction) = snake.input_queue.pop_front() {
                 let dir: IVec2 = DIR[direction as usize].into();
-                snake.body.insert(0, head + dir);
+                head + dir
             } else {
-                snake.body.insert(0, head + current_dir);
-            }
+                head + current_dir
+            };
+            
+            snake.body.insert(0, new_head);
 
             let head = snake.body[0];
             if let Some(apple_entity) = apples.list.get(&head) {
@@ -133,6 +135,7 @@ pub fn snake_system(
                 snake.body.remove(len - 1);
             }
         }
+
         snake.head_dir = if let Some(dir) = snake.input_queue.get(0) {
             DIR[*dir as usize].into()
         } else {
@@ -201,6 +204,7 @@ pub fn damage_snake_system(
         for (mut snake, snake_entity) in snake_query.iter_mut() {
             if snake.id == ev.snake_id {
                 if ev.snake_pos < 2 {
+                    snake.body.remove(0);
                     commands.entity(snake_entity).despawn();
                     dead_snakes.push(snake.id);
                 }
@@ -221,8 +225,6 @@ pub fn damage_snake_system(
             }
         }
     }
-
-    println!("{:?}", points.points);
 }
 
 #[derive(PartialEq, Clone, Copy)]
