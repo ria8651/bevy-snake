@@ -5,49 +5,22 @@ use bevy::{
     sprite::{MaterialMesh2dBundle, Mesh2dHandle},
 };
 use bevy_kira_audio::{Audio, AudioPlugin, AudioSource};
+use effects::ExplosionEv;
+use meshing::*;
 use rand::Rng;
+use snake::{DamageSnakeEv, Snake};
 use std::collections::{HashMap, VecDeque};
 
+mod effects;
 mod meshing;
-use meshing::*;
+mod snake;
 
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
-enum GameState {
+pub enum GameState {
     Menu,
     Playing,
     Paused,
     GameOver,
-}
-
-#[derive(Component)]
-pub struct Snake {
-    id: u32,
-    body: Vec<IVec2>,
-    input_map: InputMap,
-    input_queue: VecDeque<Direction>,
-    deaths: u32,
-    head_dir: IVec2,
-    tail_dir: IVec2,
-}
-
-impl Default for Snake {
-    fn default() -> Self {
-        Snake {
-            id: 0,
-            body: Vec::new(),
-            input_map: InputMap {
-                up: KeyCode::W,
-                down: KeyCode::S,
-                left: KeyCode::A,
-                right: KeyCode::D,
-                shoot: KeyCode::R,
-            },
-            input_queue: VecDeque::new(),
-            deaths: 0,
-            head_dir: IVec2::new(0, 0),
-            tail_dir: IVec2::new(0, 0),
-        }
-    }
 }
 
 #[derive(Component)]
@@ -58,7 +31,7 @@ pub struct Bullet {
     speed: u32,
 }
 
-struct Settings {
+pub struct Settings {
     interpolation: bool,
     tps: f32,
     boom_texture_atlas_handle: Option<Handle<TextureAtlas>>,
@@ -66,7 +39,7 @@ struct Settings {
 }
 
 #[derive(Clone, Copy)]
-struct InputMap {
+pub struct InputMap {
     up: KeyCode,
     down: KeyCode,
     left: KeyCode,
@@ -74,30 +47,20 @@ struct InputMap {
     shoot: KeyCode,
 }
 
-struct Board {
+pub struct Board {
     width: i32,
     height: i32,
     colour1: Color,
     colour2: Color,
 }
 
-struct MovmentTimer(Timer);
-struct BulletTimer(Timer);
-struct GameTimer(Timer);
+pub struct MovmentTimer(Timer);
+pub struct BulletTimer(Timer);
+pub struct GameTimer(Timer);
 #[derive(Component, Deref, DerefMut)]
-struct AnimationTimer(Timer);
+pub struct AnimationTimer(Timer);
 
-#[derive(PartialEq, Clone, Copy)]
-enum Direction {
-    Up,
-    Down,
-    Left,
-    Right,
-}
-
-const DIR: [[i32; 2]; 4] = [[0, 1], [0, -1], [-1, 0], [1, 0]];
-
-struct Apples {
+pub struct Apples {
     list: HashMap<IVec2, Entity>,
     apples_to_spawn: Vec<AppleSpawn>,
     sprite: Option<Handle<Image>>,
@@ -137,28 +100,40 @@ fn main() {
         })
         .add_system(bevy::input::system::exit_on_esc_system)
         .add_plugin(FrameTimeDiagnosticsPlugin::default())
+        .add_plugin(effects::EffectsPlugin)
+        .add_plugin(snake::SnakePlugin)
+        .add_event::<ExplosionEv>()
+        .add_event::<DamageSnakeEv>()
         .add_startup_system(scene_setup)
         .add_startup_system(reset_game)
-        .add_system(state_controller)
+        .add_system(game_state)
         .add_system(settings_system)
         .add_state(GameState::Menu)
         .add_system_set(
             SystemSet::on_update(GameState::Playing)
-                .with_system(snake_system)
+                .with_system(snake::snake_system)
                 .with_system(bullet_system)
                 .with_system(spawn_apples)
-                .with_system(animate_explostions)
-                .with_system(game_progress),
         )
         .add_system_set(SystemSet::on_enter(GameState::Playing).with_system(reset_game))
         .add_system(fps_system)
         .run();
 }
 
-fn state_controller(mut game_state: ResMut<State<GameState>>, keys: Res<Input<KeyCode>>) {
+fn game_state(
+    mut game_state: ResMut<State<GameState>>,
+    keys: Res<Input<KeyCode>>,
+    mut settings: ResMut<Settings>,
+    time: Res<Time>,
+    mut game_timer: ResMut<GameTimer>,
+    snake_query: Query<&Snake>,
+) {
     match game_state.current() {
         GameState::Menu => game_state.set(GameState::Playing).unwrap(),
         GameState::Playing => {
+            if snake_query.is_empty() {
+                game_state.set(GameState::GameOver).unwrap();
+            }
             if keys.just_pressed(KeyCode::P) {
                 game_state.push(GameState::Paused).unwrap()
             }
@@ -174,15 +149,8 @@ fn state_controller(mut game_state: ResMut<State<GameState>>, keys: Res<Input<Ke
             }
         }
     }
-}
 
-fn game_progress(
-    mut settings: ResMut<Settings>,
-    time: Res<Time>,
-    mut game_timer: ResMut<GameTimer>,
-) {
     game_timer.0.tick(time.delta());
-
     settings.tps = (game_timer.0.elapsed_secs() * 0.1 + 5.0).clamp(5.0, 8.0);
 }
 
@@ -274,8 +242,8 @@ fn scene_setup(
     settings.boom_sound_handle = Some(asset_server.load("sounds/boom.ogg"));
 
     // song
-    let music = asset_server.load("sounds/song.ogg");
-    audio.play_looped(music);
+    // let music = asset_server.load("sounds/song.ogg");
+    // audio.play_looped(music);
 }
 
 fn settings_system(mut settings: ResMut<Settings>, keys: Res<Input<KeyCode>>) {
@@ -391,141 +359,17 @@ fn reset_game(
     }
 }
 
-fn snake_system(
-    mut commands: Commands,
-    mut snake_query: Query<(&mut Snake, &mut Mesh2dHandle)>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    time: Res<Time>,
-    mut timer: ResMut<MovmentTimer>,
-    keys: Res<Input<KeyCode>>,
-    mut apples: ResMut<Apples>,
-    b: Res<Board>,
-    mut app_state: ResMut<State<GameState>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    settings: Res<Settings>,
-) {
-    timer
-        .0
-        .set_duration(std::time::Duration::from_secs_f32(1.0 / settings.tps));
-    timer.0.tick(time.delta());
-
-    for (mut snake, mut mesh_handle) in snake_query.iter_mut() {
-        let head = snake.body[0];
-        let neck = snake.body[1];
-        let current_dir = head - neck;
-        let forward = head - neck;
-
-        let last_in_queue = *snake.input_queue.back().unwrap_or(&get_direction(forward));
-        if snake.input_queue.len() < 3 {
-            if keys.just_pressed(snake.input_map.up) {
-                if last_in_queue != Direction::Down && last_in_queue != Direction::Up {
-                    snake.input_queue.push_back(Direction::Up);
-                }
-            }
-            if keys.just_pressed(snake.input_map.down) {
-                if last_in_queue != Direction::Up && last_in_queue != Direction::Down {
-                    snake.input_queue.push_back(Direction::Down);
-                }
-            }
-            if keys.just_pressed(snake.input_map.left) {
-                if last_in_queue != Direction::Right && last_in_queue != Direction::Left {
-                    snake.input_queue.push_back(Direction::Left);
-                }
-            }
-            if keys.just_pressed(snake.input_map.right) {
-                if last_in_queue != Direction::Left && last_in_queue != Direction::Right {
-                    snake.input_queue.push_back(Direction::Right);
-                }
-            }
-        }
-
-        let len = snake.body.len();
-        if keys.just_pressed(snake.input_map.shoot) && len > 2 {
-            spawn_bullet(
-                snake.id,
-                head,
-                current_dir,
-                &mut commands,
-                &mut materials,
-                &b,
-            );
-            snake.body.remove(len - 1);
-        }
-
-        if timer.0.just_finished() {
-            if let Some(direction) = snake.input_queue.pop_front() {
-                let dir: IVec2 = DIR[direction as usize].into();
-                snake.body.insert(0, head + dir);
-            } else {
-                snake.body.insert(0, head + current_dir);
-            }
-
-            let head = snake.body[0];
-            if let Some(apple_entity) = apples.list.get(&head) {
-                commands.entity(*apple_entity).despawn();
-                apples.list.remove(&head);
-
-                apples.apples_to_spawn.push(AppleSpawn::Random);
-            } else {
-                let len = snake.body.len();
-                snake.tail_dir = snake.body[len - 2] - snake.body[len - 1];
-
-                // Shrink Snake
-                snake.body.remove(len - 1);
-            }
-        }
-        snake.head_dir = if let Some(dir) = snake.input_queue.get(0) {
-            DIR[*dir as usize].into()
-        } else {
-            head - neck
-        };
-
-        let interpolation = if settings.interpolation {
-            timer.0.elapsed_secs() / timer.0.duration().as_secs_f32() - 0.5
-        } else {
-            0.0
-        };
-        let mesh = mesh_snake(&snake, interpolation);
-        *mesh_handle = meshes.add(mesh).into();
-    }
-
-    // Handle end game
-    if timer.0.just_finished() {
-        for (snake, _) in snake_query.iter() {
-            let new_head = snake.body[0];
-            if !in_bounds(new_head, &b) {
-                app_state.set(GameState::GameOver).unwrap();
-                return;
-            }
-
-            for (other_snake, _) in snake_query.iter() {
-                for i in 0..other_snake.body.len() {
-                    if snake.id == other_snake.id && i == 0 {
-                        continue;
-                    }
-
-                    if other_snake.body[i] == new_head {
-                        app_state.set(GameState::GameOver).unwrap();
-                        return;
-                    }
-                }
-            }
-        }
-    }
-}
-
 fn bullet_system(
     mut commands: Commands,
-    mut snake_query: Query<(&mut Snake, Entity)>,
+    mut snake_query: Query<&Snake>,
     mut bullet_query: Query<(&mut Bullet, &mut Mesh2dHandle, Entity)>,
     mut meshes: ResMut<Assets<Mesh>>,
     time: Res<Time>,
     mut timer: ResMut<BulletTimer>,
     b: Res<Board>,
     settings: Res<Settings>,
-    mut apples: ResMut<Apples>,
-    mut app_state: ResMut<State<GameState>>,
-    audio: Res<Audio>,
+    mut explosion_ev: EventWriter<ExplosionEv>,
+    mut damage_ev: EventWriter<DamageSnakeEv>,
 ) {
     use std::time::Duration;
     timer
@@ -539,30 +383,27 @@ fn bullet_system(
                 let pos = bullet.pos + bullet.dir * i as i32;
 
                 if !in_bounds(pos, &b) {
-                    boom(&mut commands, &settings, &audio, pos, &b);
+                    // boom(&mut commands, &settings, &audio, pos, &b);
+                    explosion_ev.send(ExplosionEv { pos });
                     commands.entity(bullet_entity).despawn();
                     continue 'outer;
                 }
 
-                for (mut snake, snake_entity) in snake_query.iter_mut() {
+                for snake in snake_query.iter_mut() {
                     for j in 0..snake.body.len() {
                         if snake.body[j] == pos {
-                            // Headshot
                             if j < 2 {
                                 if snake.id == bullet.id {
                                     continue;
                                 }
-
-                                commands.entity(snake_entity).despawn();
-                            };
-                            boom(&mut commands, &settings, &audio, pos, &b);
-                            commands.entity(bullet_entity).despawn();
-
-                            for _ in j..snake.body.len() {
-                                let pos = snake.body[j];
-                                snake.body.remove(j);
-                                apples.apples_to_spawn.push(AppleSpawn::Pos(pos));
                             }
+
+                            commands.entity(bullet_entity).despawn();
+                            explosion_ev.send(ExplosionEv { pos });
+                            damage_ev.send(DamageSnakeEv {
+                                snake_id: snake.id,
+                                snake_pos: j,
+                            });
 
                             continue 'outer;
                         }
@@ -662,46 +503,6 @@ fn spawn_bullet(
         .insert(bullet);
 }
 
-fn boom(commands: &mut Commands, settings: &Settings, audio: &Audio, pos: IVec2, b: &Board) {
-    commands
-        .spawn_bundle(SpriteSheetBundle {
-            texture_atlas: settings.boom_texture_atlas_handle.as_ref().unwrap().clone(),
-            transform: Transform::from_xyz(
-                pos.x as f32 - b.width as f32 / 2.0 + 0.5,
-                pos.y as f32 - b.height as f32 / 2.0 + 0.5,
-                12.0,
-            )
-            .with_scale(Vec3::new(0.01, 0.01, 1.0)),
-            ..default()
-        })
-        .insert(AnimationTimer(Timer::from_seconds(0.04, true)));
-
-    audio.play(settings.boom_sound_handle.as_ref().unwrap().clone());
-}
-
-fn animate_explostions(
-    mut commands: Commands,
-    time: Res<Time>,
-    texture_atlases: Res<Assets<TextureAtlas>>,
-    mut query: Query<(
-        &mut AnimationTimer,
-        &mut TextureAtlasSprite,
-        &Handle<TextureAtlas>,
-        Entity,
-    )>,
-) {
-    for (mut timer, mut sprite, texture_atlas_handle, entity) in query.iter_mut() {
-        timer.tick(time.delta());
-        if timer.just_finished() {
-            let texture_atlas = texture_atlases.get(texture_atlas_handle).unwrap();
-            sprite.index = sprite.index + 1;
-            if sprite.index >= texture_atlas.textures.len() {
-                commands.entity(entity).despawn();
-            }
-        }
-    }
-}
-
 fn in_bounds(pos: IVec2, b: &Board) -> bool {
     pos.x >= 0 && pos.x < b.width && pos.y >= 0 && pos.y < b.height
 }
@@ -713,16 +514,6 @@ fn calculate_flip(dir: IVec2) -> IVec2 {
         [1, 0] => IVec2::new(1, 1),
         [-1, 0] => IVec2::new(-1, 1),
         _ => IVec2::new(1, 1),
-    }
-}
-
-fn get_direction(dir: IVec2) -> Direction {
-    match dir.to_array() {
-        [0, 1] => Direction::Up,
-        [0, -1] => Direction::Down,
-        [1, 0] => Direction::Right,
-        [-1, 0] => Direction::Left,
-        _ => panic!("Invalid direction"),
     }
 }
 
