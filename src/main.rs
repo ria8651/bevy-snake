@@ -343,7 +343,7 @@ fn reset_game(
 
     let transform = Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0);
 
-    for i in 0..4 {
+    for i in 0..2 {
         commands
             .spawn_bundle(MaterialMesh2dBundle {
                 material: materials.add(ColorMaterial::from(snake_colours[i])),
@@ -478,29 +478,6 @@ fn spawn_apples(
                 .id(),
         );
     }
-}
-
-fn spawn_bullet(
-    id: u32,
-    pos: IVec2,
-    dir: IVec2,
-    commands: &mut Commands,
-    materials: &mut ResMut<Assets<ColorMaterial>>,
-    b: &Board,
-) {
-    let bullet = Bullet {
-        id,
-        pos,
-        dir,
-        speed: 2,
-    };
-    commands
-        .spawn_bundle(MaterialMesh2dBundle {
-            material: materials.add(ColorMaterial::from(Color::rgb(1.0, 1.0, 0.26))),
-            transform: Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0),
-            ..default()
-        })
-        .insert(bullet);
 }
 
 fn in_bounds(pos: IVec2, b: &Board) -> bool {

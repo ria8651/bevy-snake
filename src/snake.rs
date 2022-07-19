@@ -4,7 +4,12 @@ pub struct SnakePlugin;
 
 impl Plugin for SnakePlugin {
     fn build(&self, app: &mut App) {
-        app.add_system(damage_snake_system.after(snake_system).before(game_state));
+        app.insert_resource(Points { points: [0; 4] }).add_system(
+            damage_snake_system
+                .after(snake_system)
+                .after(bullet_system)
+                .before(game_state),
+        );
     }
 }
 
@@ -14,7 +19,6 @@ pub struct Snake {
     pub body: Vec<IVec2>,
     pub input_map: InputMap,
     pub input_queue: VecDeque<Direction>,
-    pub deaths: u32,
     pub head_dir: IVec2,
     pub tail_dir: IVec2,
 }
@@ -32,7 +36,6 @@ impl Default for Snake {
                 shoot: KeyCode::R,
             },
             input_queue: VecDeque::new(),
-            deaths: 0,
             head_dir: IVec2::new(0, 0),
             tail_dir: IVec2::new(0, 0),
         }
@@ -89,15 +92,23 @@ pub fn snake_system(
 
         let len = snake.body.len();
         if keys.just_pressed(snake.input_map.shoot) && len > 2 {
-            spawn_bullet(
-                snake.id,
-                head,
-                current_dir,
-                &mut commands,
-                &mut materials,
-                &b,
-            );
             snake.body.remove(len - 1);
+            commands
+                .spawn_bundle(MaterialMesh2dBundle {
+                    material: materials.add(ColorMaterial::from(Color::rgb(1.0, 1.0, 0.26))),
+                    transform: Transform::from_xyz(
+                        -b.width as f32 / 2.0,
+                        -b.height as f32 / 2.0,
+                        11.0,
+                    ),
+                    ..default()
+                })
+                .insert(Bullet {
+                    id: snake.id,
+                    pos: head,
+                    dir: current_dir,
+                    speed: 2,
+                });
         }
 
         if timer.0.just_finished() {
@@ -168,6 +179,10 @@ pub fn snake_system(
     }
 }
 
+pub struct Points {
+    pub points: [u32; 4],
+}
+
 pub struct DamageSnakeEv {
     pub snake_id: u32,
     pub snake_pos: usize,
@@ -178,12 +193,16 @@ pub fn damage_snake_system(
     mut damage_snake_ev: EventReader<DamageSnakeEv>,
     mut snake_query: Query<(&mut Snake, Entity)>,
     mut apples: ResMut<Apples>,
+    mut points: ResMut<Points>,
 ) {
+    let mut dead_snakes = Vec::new();
+
     for ev in damage_snake_ev.iter() {
         for (mut snake, snake_entity) in snake_query.iter_mut() {
             if snake.id == ev.snake_id {
                 if ev.snake_pos < 2 {
                     commands.entity(snake_entity).despawn();
+                    dead_snakes.push(snake.id);
                 }
 
                 for _ in ev.snake_pos..snake.body.len() {
@@ -194,6 +213,16 @@ pub fn damage_snake_system(
             }
         }
     }
+
+    for dead_snake_id in &dead_snakes {
+        for (snake, _) in snake_query.iter() {
+            if snake.id != *dead_snake_id && !dead_snakes.contains(&snake.id) {
+                points.points[snake.id as usize] += 1;
+            }
+        }
+    }
+
+    println!("{:?}", points.points);
 }
 
 #[derive(PartialEq, Clone, Copy)]
