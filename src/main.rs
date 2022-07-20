@@ -1,3 +1,4 @@
+use apples::{AppleEv, Apples};
 use bevy::{
     prelude::*,
     render::{camera::ScalingMode, mesh::PrimitiveTopology},
@@ -8,9 +9,10 @@ use effects::ExplosionEv;
 use guns::{Bullet, SpawnBulletEv};
 use meshing::*;
 use rand::Rng;
-use snake::{DamageSnakeEv, Snake};
+use snake::{DamageSnakeEv, InputMap, Snake};
 use std::collections::{HashMap, VecDeque};
 
+mod apples;
 mod effects;
 mod fps_counter;
 mod guns;
@@ -32,15 +34,6 @@ pub struct Settings {
     boom_sound_handle: Option<Handle<AudioSource>>,
 }
 
-#[derive(Clone, Copy)]
-pub struct InputMap {
-    up: KeyCode,
-    down: KeyCode,
-    left: KeyCode,
-    right: KeyCode,
-    shoot: KeyCode,
-}
-
 pub struct Board {
     width: i32,
     height: i32,
@@ -53,18 +46,6 @@ pub struct BulletTimer(Timer);
 pub struct GameTimer(Timer);
 #[derive(Component, Deref, DerefMut)]
 pub struct AnimationTimer(Timer);
-
-pub struct Apples {
-    list: HashMap<IVec2, Entity>,
-    apples_to_spawn: Vec<AppleSpawn>,
-    sprite: Option<Handle<Image>>,
-}
-
-#[derive(Copy, Clone)]
-enum AppleSpawn {
-    Random,
-    Pos(IVec2),
-}
 
 fn main() {
     let movment_timer = Timer::from_seconds(1.0 / 4.0, true);
@@ -89,7 +70,6 @@ fn main() {
         .insert_resource(GameTimer(Timer::from_seconds(99999.0, false)))
         .insert_resource(Apples {
             list: HashMap::new(),
-            apples_to_spawn: Vec::new(),
             sprite: None,
         })
         .add_plugin(fps_counter::FpsCounter)
@@ -97,15 +77,15 @@ fn main() {
         .add_plugin(effects::EffectsPlugin)
         .add_plugin(snake::SnakePlugin)
         .add_plugin(guns::GunPlugin)
+        .add_plugin(apples::ApplePlugin)
         .add_event::<ExplosionEv>()
         .add_event::<DamageSnakeEv>()
         .add_event::<SpawnBulletEv>()
+        .add_event::<AppleEv>()
         .add_startup_system(scene_setup)
-        .add_startup_system(reset_game)
         .add_system(game_state)
         .add_system(settings_system)
         .add_state(GameState::Menu)
-        .add_system_set(SystemSet::on_update(GameState::Playing).with_system(spawn_apples))
         .add_system_set(SystemSet::on_enter(GameState::Playing).with_system(reset_game))
         .run();
 }
@@ -223,20 +203,22 @@ fn reset_game(
     mut game_timer: ResMut<GameTimer>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     b: Res<Board>,
+    mut apple_ev: EventWriter<AppleEv>,
 ) {
     for snake_entity in snake_query.iter() {
         commands.entity(snake_entity).despawn();
     }
-
     for bullet_entity in bullet_query.iter() {
         commands.entity(bullet_entity).despawn();
     }
     for apple in apples.list.iter().clone() {
         commands.entity(*apple.1).despawn();
     }
-
     apples.list = HashMap::new();
-    apples.apples_to_spawn = vec![AppleSpawn::Random; 3];
+
+    for _ in 0..3 {
+        apple_ev.send(AppleEv::SpawnRandom);
+    }
 
     game_timer.0.reset();
 
@@ -319,61 +301,6 @@ fn reset_game(
                 input_map: snake_controls[i],
                 ..Default::default()
             });
-    }
-}
-
-fn spawn_apples(
-    mut apples: ResMut<Apples>,
-    snake_query: Query<&Snake>,
-    mut commands: Commands,
-    b: Res<Board>,
-) {
-    let mut rng = rand::thread_rng();
-
-    while let Some(apple) = apples.apples_to_spawn.pop() {
-        let mut pos;
-        let mut count = 0;
-        'inner: loop {
-            pos = if let AppleSpawn::Pos(pos) = apple {
-                pos
-            } else {
-                IVec2::new(rng.gen_range(0..b.width), rng.gen_range(0..b.height))
-            };
-
-            count += 1;
-            if count > 1000 {
-                return;
-            }
-
-            if apples.list.contains_key(&pos) {
-                continue 'inner;
-            }
-
-            for snake in snake_query.iter() {
-                if snake.body.contains(&pos) {
-                    continue 'inner;
-                }
-            }
-
-            break;
-        }
-
-        let texture = apples.sprite.as_ref().unwrap().clone();
-        apples.list.insert(
-            pos,
-            commands
-                .spawn_bundle(SpriteBundle {
-                    texture: texture,
-                    transform: Transform::from_xyz(
-                        pos.x as f32 - b.width as f32 / 2.0 + 0.5,
-                        pos.y as f32 - b.height as f32 / 2.0 + 0.5,
-                        5.0,
-                    )
-                    .with_scale(Vec3::splat(1.0 / 512.0)),
-                    ..default()
-                })
-                .id(),
-        );
     }
 }
 

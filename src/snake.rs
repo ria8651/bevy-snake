@@ -44,6 +44,15 @@ impl Default for Snake {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct InputMap {
+    pub up: KeyCode,
+    pub down: KeyCode,
+    pub left: KeyCode,
+    pub right: KeyCode,
+    pub shoot: KeyCode,
+}
+
 pub fn snake_system(
     mut commands: Commands,
     mut snake_query: Query<(&mut Snake, &mut Mesh2dHandle)>,
@@ -56,6 +65,7 @@ pub fn snake_system(
     settings: Res<Settings>,
     mut damage_ev: EventWriter<DamageSnakeEv>,
     mut spawn_bullet_ev: EventWriter<SpawnBulletEv>,
+    mut apple_ev: EventWriter<AppleEv>,
 ) {
     timer
         .0
@@ -117,7 +127,7 @@ pub fn snake_system(
                 commands.entity(*apple_entity).despawn();
                 apples.list.remove(&head);
 
-                apples.apples_to_spawn.push(AppleSpawn::Random);
+                apple_ev.send(AppleEv::SpawnRandom);
             } else {
                 let len = snake.body.len();
                 snake.tail_dir = snake.body[len - 2] - snake.body[len - 1];
@@ -186,8 +196,8 @@ pub fn damage_snake_system(
     mut commands: Commands,
     mut damage_snake_ev: EventReader<DamageSnakeEv>,
     mut snake_query: Query<(&mut Snake, Entity)>,
-    mut apples: ResMut<Apples>,
     mut points: ResMut<Points>,
+    mut apple_ev: EventWriter<AppleEv>,
 ) {
     let mut dead_snakes = Vec::new();
 
@@ -203,7 +213,7 @@ pub fn damage_snake_system(
                 for _ in ev.snake_pos..snake.body.len() {
                     let pos = snake.body[ev.snake_pos];
                     snake.body.remove(ev.snake_pos);
-                    apples.apples_to_spawn.push(AppleSpawn::Pos(pos));
+                    apple_ev.send(AppleEv::SpawnPos(pos));
                 }
             }
         }
