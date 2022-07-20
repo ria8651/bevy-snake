@@ -4,12 +4,14 @@ pub struct SnakePlugin;
 
 impl Plugin for SnakePlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(Points { points: [0; 4] }).add_system(
-            damage_snake_system
-                .after(snake_system)
-                .after(bullet_system)
-                .before(game_state),
-        );
+        app.insert_resource(Points { points: [0; 4] })
+            .add_system(
+                damage_snake_system
+                    .after(snake_system)
+                    .after(guns::bullet_system)
+                    .before(game_state),
+            )
+            .add_system_set(SystemSet::on_update(GameState::Playing).with_system(snake_system));
     }
 }
 
@@ -51,9 +53,9 @@ pub fn snake_system(
     keys: Res<Input<KeyCode>>,
     mut apples: ResMut<Apples>,
     b: Res<Board>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
     settings: Res<Settings>,
     mut damage_ev: EventWriter<DamageSnakeEv>,
+    mut spawn_bullet_ev: EventWriter<SpawnBulletEv>,
 ) {
     timer
         .0
@@ -92,23 +94,12 @@ pub fn snake_system(
 
         let len = snake.body.len();
         if keys.just_pressed(snake.input_map.shoot) && len > 2 {
-            snake.body.remove(len - 1);
-            commands
-                .spawn_bundle(MaterialMesh2dBundle {
-                    material: materials.add(ColorMaterial::from(Color::rgb(1.0, 1.0, 0.26))),
-                    transform: Transform::from_xyz(
-                        -b.width as f32 / 2.0,
-                        -b.height as f32 / 2.0,
-                        11.0,
-                    ),
-                    ..default()
-                })
-                .insert(Bullet {
-                    id: snake.id,
-                    pos: head,
-                    dir: current_dir,
-                    speed: 2,
-                });
+            spawn_bullet_ev.send(SpawnBulletEv(Bullet {
+                id: snake.id,
+                pos: head,
+                dir: current_dir,
+                speed: 2,
+            }));
         }
 
         if timer.0.just_finished() {
@@ -118,7 +109,7 @@ pub fn snake_system(
             } else {
                 head + current_dir
             };
-            
+
             snake.body.insert(0, new_head);
 
             let head = snake.body[0];

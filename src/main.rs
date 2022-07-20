@@ -1,20 +1,21 @@
 use bevy::{
-    diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin},
     prelude::*,
     render::{camera::ScalingMode, mesh::PrimitiveTopology},
     sprite::{MaterialMesh2dBundle, Mesh2dHandle},
 };
 use bevy_kira_audio::{Audio, AudioPlugin, AudioSource};
 use effects::ExplosionEv;
+use guns::{Bullet, SpawnBulletEv};
 use meshing::*;
 use rand::Rng;
 use snake::{DamageSnakeEv, Snake};
 use std::collections::{HashMap, VecDeque};
 
 mod effects;
+mod fps_counter;
+mod guns;
 mod meshing;
 mod snake;
-mod fps_counter;
 
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 pub enum GameState {
@@ -22,14 +23,6 @@ pub enum GameState {
     Playing,
     Paused,
     GameOver,
-}
-
-#[derive(Component)]
-pub struct Bullet {
-    id: u32,
-    pos: IVec2,
-    dir: IVec2,
-    speed: u32,
 }
 
 pub struct Settings {
@@ -103,19 +96,16 @@ fn main() {
         .add_system(bevy::input::system::exit_on_esc_system)
         .add_plugin(effects::EffectsPlugin)
         .add_plugin(snake::SnakePlugin)
+        .add_plugin(guns::GunPlugin)
         .add_event::<ExplosionEv>()
         .add_event::<DamageSnakeEv>()
+        .add_event::<SpawnBulletEv>()
         .add_startup_system(scene_setup)
         .add_startup_system(reset_game)
         .add_system(game_state)
         .add_system(settings_system)
         .add_state(GameState::Menu)
-        .add_system_set(
-            SystemSet::on_update(GameState::Playing)
-                .with_system(snake::snake_system)
-                .with_system(bullet_system)
-                .with_system(spawn_apples)
-        )
+        .add_system_set(SystemSet::on_update(GameState::Playing).with_system(spawn_apples))
         .add_system_set(SystemSet::on_enter(GameState::Playing).with_system(reset_game))
         .run();
 }
@@ -161,7 +151,6 @@ fn scene_setup(
     asset_server: Res<AssetServer>,
     mut texture_atlases: ResMut<Assets<TextureAtlas>>,
     mut settings: ResMut<Settings>,
-    audio: Res<Audio>,
 ) {
     apples.sprite = Some(asset_server.load("images/apple.png"));
 
@@ -330,72 +319,6 @@ fn reset_game(
                 input_map: snake_controls[i],
                 ..Default::default()
             });
-    }
-}
-
-fn bullet_system(
-    mut commands: Commands,
-    mut snake_query: Query<&Snake>,
-    mut bullet_query: Query<(&mut Bullet, &mut Mesh2dHandle, Entity)>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    time: Res<Time>,
-    mut timer: ResMut<BulletTimer>,
-    b: Res<Board>,
-    settings: Res<Settings>,
-    mut explosion_ev: EventWriter<ExplosionEv>,
-    mut damage_ev: EventWriter<DamageSnakeEv>,
-) {
-    use std::time::Duration;
-    timer
-        .0
-        .set_duration(Duration::from_secs_f32(1.0 / settings.tps));
-    timer.0.tick(time.delta());
-
-    'outer: for (mut bullet, mut mesh_handle, bullet_entity) in bullet_query.iter_mut() {
-        if timer.0.just_finished() {
-            for i in 0..=bullet.speed {
-                let pos = bullet.pos + bullet.dir * i as i32;
-
-                if !in_bounds(pos, &b) {
-                    // boom(&mut commands, &settings, &audio, pos, &b);
-                    explosion_ev.send(ExplosionEv { pos });
-                    commands.entity(bullet_entity).despawn();
-                    continue 'outer;
-                }
-
-                for snake in snake_query.iter_mut() {
-                    for j in 0..snake.body.len() {
-                        if snake.body[j] == pos {
-                            if j < 2 {
-                                if snake.id == bullet.id {
-                                    continue;
-                                }
-                            }
-
-                            commands.entity(bullet_entity).despawn();
-                            explosion_ev.send(ExplosionEv { pos });
-                            damage_ev.send(DamageSnakeEv {
-                                snake_id: snake.id,
-                                snake_pos: j,
-                            });
-
-                            continue 'outer;
-                        }
-                    }
-                }
-            }
-
-            let pos = bullet.pos + bullet.dir * bullet.speed as i32;
-            bullet.pos = pos;
-        }
-
-        let interpolation = if settings.interpolation {
-            timer.0.elapsed_secs() / timer.0.duration().as_secs_f32() - 0.5
-        } else {
-            0.0
-        };
-        let mesh = mesh_bullet(&bullet, interpolation);
-        *mesh_handle = meshes.add(mesh).into();
     }
 }
 

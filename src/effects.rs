@@ -1,11 +1,10 @@
 use super::*;
-use bevy::prelude::*;
 
 pub struct EffectsPlugin;
 
 impl Plugin for EffectsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_system(explostion_system);
+        app.add_system_set(SystemSet::on_update(GameState::Playing).with_system(explostion_system));
     }
 }
 

@@ -11,7 +11,7 @@ impl TmpMesh {
         }
     }
 
-    fn push_static_quad(&mut self, pos: IVec2, offset: Vec2, half_size: Vec2, flip: IVec2) {
+    fn push_quad(&mut self, pos: IVec2, offset: Vec2, half_size: Vec2, flip: IVec2) {
         let offset = if flip.y == 1 {
             Vec2::new(offset.y, offset.x)
         } else {
@@ -24,29 +24,6 @@ impl TmpMesh {
             half_size
         };
         let pos = Vec2::new(pos.x as f32, pos.y as f32) + 0.5 + offset * flip.x as f32;
-
-        self.verticies
-            .push([pos.x - half_size.x, pos.y - half_size.y, 0.0]);
-        self.verticies
-            .push([pos.x + half_size.x, pos.y - half_size.y, 0.0]);
-        self.verticies
-            .push([pos.x - half_size.x, pos.y + half_size.y, 0.0]);
-
-        self.verticies
-            .push([pos.x - half_size.x, pos.y + half_size.y, 0.0]);
-        self.verticies
-            .push([pos.x + half_size.x, pos.y - half_size.y, 0.0]);
-        self.verticies
-            .push([pos.x + half_size.x, pos.y + half_size.y, 0.0]);
-    }
-
-    fn push_moving_quad(&mut self, pos: IVec2, offset: Vec2, half_size: Vec2, flip: IVec2) {
-        let half_size = if flip.y == 1 {
-            Vec2::new(half_size.y, half_size.x)
-        } else {
-            half_size
-        };
-        let pos = Vec2::new(pos.x as f32, pos.y as f32) + 0.5 + offset;
 
         self.verticies
             .push([pos.x - half_size.x, pos.y - half_size.y, 0.0]);
@@ -124,7 +101,7 @@ pub fn mesh_snake(snake: &Snake, interpolation: f32) -> Mesh {
         start = 0;
 
         // Interpolate head
-        tmp_mesh.push_static_quad(
+        tmp_mesh.push_quad(
             head,
             Vec2::new(0.0, interpolation / 2.0),
             Vec2::new(width / 2.0, interpolation / 2.0),
@@ -138,7 +115,7 @@ pub fn mesh_snake(snake: &Snake, interpolation: f32) -> Mesh {
 
         // Interpolate tail
         let tail_dir = snake.body[len - 2] - snake.body[len - 1];
-        tmp_mesh.push_static_quad(
+        tmp_mesh.push_quad(
             tail,
             Vec2::new(0.0, interpolation / 2.0 + 0.25),
             Vec2::new(width / 2.0, -interpolation / 2.0 + 0.25),
@@ -149,7 +126,7 @@ pub fn mesh_snake(snake: &Snake, interpolation: f32) -> Mesh {
         end = len;
 
         // Interpolate head
-        tmp_mesh.push_static_quad(
+        tmp_mesh.push_quad(
             head,
             Vec2::new(0.0, interpolation / 2.0 - 0.25),
             Vec2::new(width / 2.0, interpolation / 2.0 + 0.25),
@@ -162,7 +139,7 @@ pub fn mesh_snake(snake: &Snake, interpolation: f32) -> Mesh {
         );
 
         // Interpolate tail
-        tmp_mesh.push_static_quad(
+        tmp_mesh.push_quad(
             tail,
             Vec2::new(0.0, interpolation / 2.0),
             Vec2::new(width / 2.0, -interpolation / 2.0),
@@ -179,7 +156,7 @@ pub fn mesh_snake(snake: &Snake, interpolation: f32) -> Mesh {
 
         if i > 0 {
             let flip1 = calculate_flip(last - pos);
-            tmp_mesh.push_static_quad(
+            tmp_mesh.push_quad(
                 pos,
                 Vec2::new(0.0, 0.25),
                 Vec2::new(width / 2.0, 0.25),
@@ -190,7 +167,7 @@ pub fn mesh_snake(snake: &Snake, interpolation: f32) -> Mesh {
         if i < len - 1 {
             let next = snake.body[i + 1];
             let flip2 = calculate_flip(next - pos);
-            tmp_mesh.push_static_quad(
+            tmp_mesh.push_quad(
                 pos,
                 Vec2::new(0.0, 0.25),
                 Vec2::new(width / 2.0, 0.25),
@@ -200,14 +177,6 @@ pub fn mesh_snake(snake: &Snake, interpolation: f32) -> Mesh {
 
         last = pos;
     }
-
-    tmp_mesh.into()
-}
-
-pub fn mesh_bullet(bullet: &Bullet, interpolation: f32) -> Mesh {
-    let mut tmp_mesh = TmpMesh::new();
-
-    tmp_mesh.push_moving_quad(bullet.pos, bullet.dir.as_vec2() * interpolation * bullet.speed as f32, Vec2::new(0.1, 0.3), calculate_flip(bullet.dir));
 
     tmp_mesh.into()
 }
