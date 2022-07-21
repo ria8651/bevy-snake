@@ -10,10 +10,6 @@ description = "SNAKE WITH GUNS!"
 # cargo build --release --target wasm32-unknown-unknown
 # wasm-bindgen --out-dir ./out/ --target web ./target/wasm32-unknown-unknown/release/bevy-snake.wasm
 
-[dependencies]
-bevy_kira_audio = "0.9.0"
-rand = "0.8.5"
-
 [dependencies.bevy]
 version = "0.7"
 default-features = false
@@ -28,6 +24,11 @@ features = [
   "x11",
   "filesystem_watcher",
 ]
+
+[dependencies]
+rand = "0.8.5"
+bevy_kira_audio = "0.9.0"
+bevy_egui = "0.14"
 
 [target.wasm32-unknown-unknown]
 runner = "wasm-server-runner"

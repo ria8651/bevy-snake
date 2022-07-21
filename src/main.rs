@@ -29,10 +29,12 @@ pub enum GameState {
 }
 
 pub struct Settings {
-    interpolation: bool,
-    tps: f32,
-    boom_texture_atlas_handle: Option<Handle<TextureAtlas>>,
-    boom_sound_handle: Option<Handle<AudioSource>>,
+    pub interpolation: bool,
+    pub tps: f32,
+    pub snake_count: u32,
+    // pub board_size: IVec2,
+    pub boom_texture_atlas_handle: Option<Handle<TextureAtlas>>,
+    pub boom_sound_handle: Option<Handle<AudioSource>>,
 }
 
 pub struct Board {
@@ -58,6 +60,10 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugin(AudioPlugin)
+        .insert_resource(WindowDescriptor {
+            title: "Snake".to_string(),
+            ..default()
+        })
         .insert_resource(Board {
             width: 17,
             height: 15,
@@ -67,6 +73,7 @@ fn main() {
         .insert_resource(Settings {
             interpolation: true,
             tps: 8.0,
+            snake_count: 2,
             boom_texture_atlas_handle: None,
             boom_sound_handle: None,
         })
@@ -85,6 +92,7 @@ fn main() {
                 Color::rgb(0.7, 0.7, 0.7),
             ],
         })
+        // .insert_resource(bevy::winit::WinitSettings::desktop_app())
         .add_plugin(fps_counter::FpsCounter)
         .add_plugin(effects::EffectsPlugin)
         .add_plugin(ui::UiPlugin)
@@ -99,7 +107,7 @@ fn main() {
         .add_event::<AppleEv>()
         .add_startup_system(scene_setup)
         .add_system(game_state)
-        .add_system(settings_system)
+        .add_system_set(SystemSet::on_update(GameState::Playing).with_system(settings_system))
         .add_system_set(SystemSet::on_enter(GameState::Playing).with_system(reset_game))
         .run();
 }
@@ -107,35 +115,29 @@ fn main() {
 fn game_state(
     mut game_state: ResMut<State<GameState>>,
     keys: Res<Input<KeyCode>>,
-    mut settings: ResMut<Settings>,
-    time: Res<Time>,
-    mut game_timer: ResMut<GameTimer>,
     snake_query: Query<&Snake>,
 ) {
     match game_state.current() {
         GameState::Menu => game_state.set(GameState::Playing).unwrap(),
         GameState::Playing => {
-            if snake_query.is_empty() {
+            if snake_query.iter().count() <= 1 {
                 game_state.set(GameState::GameOver).unwrap();
             }
             if keys.just_pressed(KeyCode::P) {
-                game_state.push(GameState::Paused).unwrap()
+                game_state.push(GameState::Paused).unwrap();
             }
         }
         GameState::Paused => {
             if keys.just_pressed(KeyCode::P) {
-                game_state.pop().unwrap()
+                game_state.pop().unwrap();
             }
         }
         GameState::GameOver => {
             if keys.just_pressed(KeyCode::Space) {
-                game_state.set(GameState::Playing).unwrap()
+                game_state.set(GameState::Playing).unwrap();
             }
         }
     }
-
-    game_timer.0.tick(time.delta());
-    settings.tps = (game_timer.0.elapsed_secs() * 0.1 + 5.0).clamp(5.0, 8.0);
 }
 
 fn scene_setup(
@@ -203,10 +205,18 @@ fn scene_setup(
     // audio.play_looped(music);
 }
 
-fn settings_system(mut settings: ResMut<Settings>, keys: Res<Input<KeyCode>>) {
+fn settings_system(
+    mut settings: ResMut<Settings>,
+    keys: Res<Input<KeyCode>>,
+    mut game_timer: ResMut<GameTimer>,
+    time: Res<Time>,
+) {
     if keys.just_pressed(KeyCode::I) {
         settings.interpolation = !settings.interpolation;
     }
+
+    game_timer.0.tick(time.delta());
+    settings.tps = (game_timer.0.elapsed_secs() * 0.1 + 5.0).clamp(5.0, 8.0);
 }
 
 fn reset_game(
@@ -219,6 +229,7 @@ fn reset_game(
     b: Res<Board>,
     mut apple_ev: EventWriter<AppleEv>,
     colours: Res<Colours>,
+    settings: Res<Settings>,
 ) {
     for snake_entity in snake_query.iter() {
         commands.entity(snake_entity).despawn();
@@ -238,7 +249,7 @@ fn reset_game(
     game_timer.0.reset();
 
     // spawn in new snakes
-    let snake_controls = [
+    let snake_controls = vec![
         InputMap {
             up: KeyCode::W,
             down: KeyCode::S,
@@ -268,7 +279,7 @@ fn reset_game(
             shoot: KeyCode::B,
         },
     ];
-    let positions = [
+    let positions = vec![
         vec![
             IVec2::new(12, 13),
             IVec2::new(13, 13),
@@ -297,7 +308,7 @@ fn reset_game(
 
     let transform = Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0);
 
-    for i in 0..4 {
+    for i in 0..settings.snake_count as usize {
         commands
             .spawn_bundle(MaterialMesh2dBundle {
                 material: materials.add(ColorMaterial::from(colours.colours[i])),

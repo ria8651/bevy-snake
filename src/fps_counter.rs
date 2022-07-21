@@ -31,18 +31,18 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                         color: Color::rgb(1.0, 1.0, 1.0),
                     },
                 }],
-                ..Default::default()
+                ..default()
             },
             style: Style {
                 position_type: PositionType::Absolute,
                 position: Rect {
                     top: Val::Px(10.0),
                     left: Val::Px(10.0),
-                    ..Default::default()
+                    ..default()
                 },
-                ..Default::default()
+                ..default()
             },
-            ..Default::default()
+            ..default()
         })
         .insert(FpsCounter);
 }
