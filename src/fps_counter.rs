@@ -4,6 +4,7 @@ use bevy::{
     prelude::*,
 };
 
+#[derive(Component)]
 pub struct FpsCounter;
 
 impl Plugin for FpsCounter {
@@ -19,33 +20,34 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.spawn_bundle(UiCameraBundle::default());
 
     // fps
-    commands.spawn_bundle(TextBundle {
-        text: Text {
-            sections: vec![TextSection {
-                value: "0.00".to_string(),
-                style: TextStyle {
-                    font: asset_server.load("fonts/FiraSans-Bold.ttf"),
-                    font_size: 40.0,
-                    color: Color::rgb(1.0, 1.0, 1.0),
+    commands
+        .spawn_bundle(TextBundle {
+            text: Text {
+                sections: vec![TextSection {
+                    value: "0.00".to_string(),
+                    style: TextStyle {
+                        font: asset_server.load("fonts/FiraSans-Bold.ttf"),
+                        font_size: 40.0,
+                        color: Color::rgb(1.0, 1.0, 1.0),
+                    },
+                }],
+                ..Default::default()
+            },
+            style: Style {
+                position_type: PositionType::Absolute,
+                position: Rect {
+                    top: Val::Px(10.0),
+                    left: Val::Px(10.0),
                     ..Default::default()
                 },
-            }],
-            ..Default::default()
-        },
-        style: Style {
-            position_type: PositionType::Absolute,
-            position: Rect {
-                top: Val::Px(10.0),
-                left: Val::Px(10.0),
                 ..Default::default()
             },
             ..Default::default()
-        },
-        ..Default::default()
-    });
+        })
+        .insert(FpsCounter);
 }
 
-fn fps_system(diagnostics: Res<Diagnostics>, mut query: Query<&mut Text>) {
+fn fps_system(diagnostics: Res<Diagnostics>, mut query: Query<&mut Text, With<FpsCounter>>) {
     if let Some(fps) = diagnostics.get(FrameTimeDiagnosticsPlugin::FPS) {
         if let Some(average) = fps.average() {
             for mut text in query.iter_mut() {

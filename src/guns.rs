@@ -33,7 +33,9 @@ pub fn bullet_spawner(
         for mut snake in snake_query.iter_mut() {
             if snake.id == bullet.id {
                 let len = snake.body.len();
-                snake.body.remove(len - 1);
+                if len > 0 {
+                    snake.body.remove(len - 1);
+                }
             }
         }
 

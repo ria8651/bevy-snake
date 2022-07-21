@@ -205,7 +205,9 @@ pub fn damage_snake_system(
         for (mut snake, snake_entity) in snake_query.iter_mut() {
             if snake.id == ev.snake_id {
                 if ev.snake_pos < 2 {
-                    snake.body.remove(0);
+                    if snake.body.len() > 0 {
+                        snake.body.remove(0);
+                    }
                     commands.entity(snake_entity).despawn();
                     dead_snakes.push(snake.id);
                 }

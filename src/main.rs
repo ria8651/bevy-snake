@@ -18,6 +18,7 @@ mod fps_counter;
 mod guns;
 mod meshing;
 mod snake;
+mod ui;
 
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 pub enum GameState {
@@ -47,6 +48,10 @@ pub struct GameTimer(Timer);
 #[derive(Component, Deref, DerefMut)]
 pub struct AnimationTimer(Timer);
 
+struct Colours {
+    colours: Vec<Color>,
+}
+
 fn main() {
     let movment_timer = Timer::from_seconds(1.0 / 4.0, true);
 
@@ -72,12 +77,22 @@ fn main() {
             list: HashMap::new(),
             sprite: None,
         })
+        .insert_resource(Colours {
+            colours: vec![
+                Color::rgb(0.0, 0.7, 0.25),
+                Color::rgb(0.3, 0.4, 0.7),
+                Color::rgb(0.7, 0.4, 0.3),
+                Color::rgb(0.7, 0.7, 0.7),
+            ],
+        })
         .add_plugin(fps_counter::FpsCounter)
-        .add_system(bevy::input::system::exit_on_esc_system)
         .add_plugin(effects::EffectsPlugin)
+        .add_plugin(ui::UiPlugin)
         .add_plugin(snake::SnakePlugin)
         .add_plugin(guns::GunPlugin)
         .add_plugin(apples::ApplePlugin)
+        .add_system(bevy::input::system::exit_on_esc_system)
+        .add_state(GameState::Menu)
         .add_event::<ExplosionEv>()
         .add_event::<DamageSnakeEv>()
         .add_event::<SpawnBulletEv>()
@@ -85,7 +100,6 @@ fn main() {
         .add_startup_system(scene_setup)
         .add_system(game_state)
         .add_system(settings_system)
-        .add_state(GameState::Menu)
         .add_system_set(SystemSet::on_enter(GameState::Playing).with_system(reset_game))
         .run();
 }
@@ -204,6 +218,7 @@ fn reset_game(
     mut materials: ResMut<Assets<ColorMaterial>>,
     b: Res<Board>,
     mut apple_ev: EventWriter<AppleEv>,
+    colours: Res<Colours>,
 ) {
     for snake_entity in snake_query.iter() {
         commands.entity(snake_entity).despawn();
@@ -223,12 +238,6 @@ fn reset_game(
     game_timer.0.reset();
 
     // spawn in new snakes
-    let snake_colours = [
-        Color::rgb(0.0, 0.7, 0.25),
-        Color::rgb(0.3, 0.4, 0.7),
-        Color::rgb(0.7, 0.4, 0.3),
-        Color::rgb(0.7, 0.7, 0.7),
-    ];
     let snake_controls = [
         InputMap {
             up: KeyCode::W,
@@ -291,7 +300,7 @@ fn reset_game(
     for i in 0..4 {
         commands
             .spawn_bundle(MaterialMesh2dBundle {
-                material: materials.add(ColorMaterial::from(snake_colours[i])),
+                material: materials.add(ColorMaterial::from(colours.colours[i])),
                 transform,
                 ..default()
             })
