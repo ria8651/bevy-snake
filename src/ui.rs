@@ -130,6 +130,13 @@ fn ui_system(
             }
 
             ui.add(egui::Slider::new(&mut settings.snake_count, 1..=4).text("Players: "));
+
+            ui.label("Controls");
+            ui.label("Snake 1: WASD to move, LShift to shoot");
+            ui.label("Snake 2: Arrows to move, RAlt to shoot");
+            ui.label("Snake 3: PL;' to move, \\ to shoot");
+            ui.label("Snake 4: YGHJ to move, B to shoot");
+            ui.label("Space to restart");
         });
 
     for (point_id, mut text, mut style) in point_query.iter_mut() {

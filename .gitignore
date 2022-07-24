@@ -2,3 +2,5 @@
 /src/main.rs
 /out
 *.afdesign
+/web
+/.cargo

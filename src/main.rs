@@ -57,8 +57,14 @@ struct Colours {
 fn main() {
     let movment_timer = Timer::from_seconds(1.0 / 4.0, true);
 
-    App::new()
-        .add_plugins(DefaultPlugins)
+    let mut app = App::new();
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        app.add_plugin(bevy_web_resizer::Plugin);
+    }
+
+    app.add_plugins(DefaultPlugins)
         .add_plugin(AudioPlugin)
         .insert_resource(WindowDescriptor {
             title: "Snake".to_string(),
