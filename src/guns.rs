@@ -66,6 +66,8 @@ pub fn bullet_system(
     settings: Res<Settings>,
     mut explosion_ev: EventWriter<ExplosionEv>,
     mut damage_ev: EventWriter<DamageSnakeEv>,
+    walls: Res<Walls>,
+    mut wall_ev: EventWriter<WallEv>,
 ) {
     use std::time::Duration;
     timer
@@ -75,11 +77,11 @@ pub fn bullet_system(
 
     'outer: for (mut bullet, mut transform, bullet_entity) in bullet_query.iter_mut() {
         if timer.0.just_finished() {
+            // handle collision
             for i in 0..=bullet.speed {
                 let pos = bullet.pos + bullet.dir * i as i32;
 
                 if !in_bounds(pos, &b) {
-                    // boom(&mut commands, &settings, &audio, pos, &b);
                     explosion_ev.send(ExplosionEv { pos });
                     commands.entity(bullet_entity).despawn();
                     continue 'outer;
@@ -103,6 +105,14 @@ pub fn bullet_system(
 
                             continue 'outer;
                         }
+                    }
+                }
+
+                for (wall_pos, _) in walls.list.iter() {
+                    if *wall_pos == pos {
+                        explosion_ev.send(ExplosionEv { pos });
+                        wall_ev.send(WallEv::Destroy(pos));
+                        commands.entity(bullet_entity).despawn();
                     }
                 }
             }

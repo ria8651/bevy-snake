@@ -118,6 +118,7 @@ fn ui_system(
     mut egui_context: ResMut<EguiContext>,
     mut game_state: ResMut<State<GameState>>,
     mut settings: ResMut<Settings>,
+    mut wall_ev: EventWriter<WallEv>,
 ) {
     // egui ui
     egui::Window::new("Settings")
@@ -130,6 +131,13 @@ fn ui_system(
             }
 
             ui.add(egui::Slider::new(&mut settings.snake_count, 1..=4).text("Players: "));
+
+            ui.checkbox(&mut settings.walls, "Walls");
+            ui.checkbox(&mut settings.walls_debug, "Walls debug");
+
+            if ui.button("Spawn wall").clicked() {
+                wall_ev.send(WallEv::Spawn);
+            }
 
             ui.label("Controls");
             ui.label("Snake 1: WASD to move, LShift to shoot");

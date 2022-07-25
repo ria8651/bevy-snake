@@ -26,14 +26,18 @@ pub struct Apples {
 pub enum AppleEv {
     SpawnRandom,
     SpawnPos(IVec2),
+    Despawn(IVec2),
 }
 
 fn apple_system(
-    mut apples: ResMut<Apples>,
-    snake_query: Query<&Snake>,
     mut commands: Commands,
+    mut apples: ResMut<Apples>,
+    walls: Res<Walls>,
+    snake_query: Query<&Snake>,
     b: Res<Board>,
     mut apple_ev: EventReader<AppleEv>,
+    mut wall_ev: EventWriter<WallEv>,
+    settings: Res<Settings>,
 ) {
     let mut rng = rand::thread_rng();
 
@@ -54,7 +58,7 @@ fn apple_system(
                         return;
                     }
 
-                    if apples.list.contains_key(&pos) {
+                    if walls.list.contains_key(&pos) || apples.list.contains_key(&pos) {
                         continue 'apple;
                     }
 
@@ -76,13 +80,21 @@ fn apple_system(
                             transform: Transform::from_xyz(
                                 pos.x as f32 - b.width as f32 / 2.0 + 0.5,
                                 pos.y as f32 - b.height as f32 / 2.0 + 0.5,
-                                5.0,
+                                10.0,
                             )
                             .with_scale(Vec3::splat(1.0 / 512.0)),
                             ..default()
                         })
                         .id(),
                 );
+            }
+            AppleEv::Despawn(pos) => {
+                if let Some(entity) = apples.list.remove(&pos) {
+                    commands.entity(entity).despawn();
+                    if settings.walls {
+                        wall_ev.send(WallEv::Spawn);
+                    }
+                }
             }
         }
     }

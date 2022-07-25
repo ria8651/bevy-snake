@@ -54,13 +54,13 @@ pub struct InputMap {
 }
 
 pub fn snake_system(
-    mut commands: Commands,
     mut snake_query: Query<(&mut Snake, &mut Mesh2dHandle)>,
     mut meshes: ResMut<Assets<Mesh>>,
     time: Res<Time>,
     mut timer: ResMut<MovmentTimer>,
     keys: Res<Input<KeyCode>>,
-    mut apples: ResMut<Apples>,
+    apples: Res<Apples>,
+    walls: Res<Walls>,
     b: Res<Board>,
     settings: Res<Settings>,
     mut damage_ev: EventWriter<DamageSnakeEv>,
@@ -123,10 +123,15 @@ pub fn snake_system(
             snake.body.insert(0, new_head);
 
             let head = snake.body[0];
-            if let Some(apple_entity) = apples.list.get(&head) {
-                commands.entity(*apple_entity).despawn();
-                apples.list.remove(&head);
+            if walls.list.contains_key(&head) {
+                damage_ev.send(DamageSnakeEv {
+                    snake_id: snake.id,
+                    snake_pos: 0,
+                });
+            }
 
+            if apples.list.contains_key(&head) {
+                apple_ev.send(AppleEv::Despawn(head));
                 apple_ev.send(AppleEv::SpawnRandom);
             } else {
                 let len = snake.body.len();

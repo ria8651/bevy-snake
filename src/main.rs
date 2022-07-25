@@ -11,6 +11,7 @@ use meshing::*;
 use rand::Rng;
 use snake::{DamageSnakeEv, InputMap, Snake};
 use std::collections::{HashMap, VecDeque};
+use walls::{WallEv, Walls};
 
 mod apples;
 mod effects;
@@ -19,6 +20,7 @@ mod guns;
 mod meshing;
 mod snake;
 mod ui;
+mod walls;
 
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 pub enum GameState {
@@ -32,6 +34,8 @@ pub struct Settings {
     pub interpolation: bool,
     pub tps: f32,
     pub snake_count: u32,
+    pub walls: bool,
+    pub walls_debug: bool,
     // pub board_size: IVec2,
     pub boom_texture_atlas_handle: Option<Handle<TextureAtlas>>,
     pub boom_sound_handle: Option<Handle<AudioSource>>,
@@ -70,16 +74,19 @@ fn main() {
             title: "Snake".to_string(),
             ..default()
         })
+        .insert_resource(ClearColor(Color::rgb(0.1, 0.1, 0.1)))
         .insert_resource(Board {
             width: 17,
             height: 15,
-            colour1: Color::rgb(0.3, 0.3, 0.3),
-            colour2: Color::rgb(0.2, 0.2, 0.2),
+            colour1: Color::rgb(0.3, 0.5, 0.3),
+            colour2: Color::rgb(0.25, 0.45, 0.25),
         })
         .insert_resource(Settings {
             interpolation: true,
-            tps: 8.0,
-            snake_count: 2,
+            tps: 5.0,
+            snake_count: 4,
+            walls: false,
+            walls_debug: false,
             boom_texture_atlas_handle: None,
             boom_sound_handle: None,
         })
@@ -90,6 +97,9 @@ fn main() {
             list: HashMap::new(),
             sprite: None,
         })
+        .insert_resource(Walls {
+            list: HashMap::new(),
+        })
         .insert_resource(Colours {
             colours: vec![
                 Color::rgb(0.0, 0.7, 0.25),
@@ -98,11 +108,11 @@ fn main() {
                 Color::rgb(0.7, 0.7, 0.7),
             ],
         })
-        // .insert_resource(bevy::winit::WinitSettings::desktop_app())
         .add_plugin(fps_counter::FpsCounter)
         .add_plugin(effects::EffectsPlugin)
         .add_plugin(ui::UiPlugin)
         .add_plugin(snake::SnakePlugin)
+        .add_plugin(walls::WallPlugin)
         .add_plugin(guns::GunPlugin)
         .add_plugin(apples::ApplePlugin)
         .add_system(bevy::input::system::exit_on_esc_system)
@@ -111,6 +121,7 @@ fn main() {
         .add_event::<DamageSnakeEv>()
         .add_event::<SpawnBulletEv>()
         .add_event::<AppleEv>()
+        .add_event::<WallEv>()
         .add_startup_system(scene_setup)
         .add_system(game_state)
         .add_system_set(SystemSet::on_update(GameState::Playing).with_system(settings_system))
@@ -126,7 +137,7 @@ fn game_state(
     match game_state.current() {
         GameState::Menu => game_state.set(GameState::Playing).unwrap(),
         GameState::Playing => {
-            if snake_query.iter().count() <= 1 {
+            if snake_query.iter().count() < 1 {
                 game_state.set(GameState::GameOver).unwrap();
             }
             if keys.just_pressed(KeyCode::P) {
@@ -163,17 +174,8 @@ fn scene_setup(
             scale: b.height as f32 / 2.0,
             ..Default::default()
         },
-        transform: Transform::from_xyz(0.0, 0.0, 999.9),
+        transform: Transform::from_xyz(0.0, 0.0, 500.0),
         ..OrthographicCameraBundle::new_2d()
-    });
-
-    commands.spawn_bundle(SpriteBundle {
-        sprite: Sprite {
-            color: Color::rgb(0.1, 0.1, 0.1),
-            custom_size: Some(Vec2::new(1000.0, 1000.0)),
-            ..default()
-        },
-        ..default()
     });
 
     for x in 0..b.width {
@@ -186,14 +188,11 @@ fn scene_setup(
 
             commands.spawn_bundle(SpriteBundle {
                 sprite: Sprite { color, ..default() },
-                transform: Transform {
-                    translation: Vec3::new(
-                        x as f32 - b.width as f32 / 2.0 + 0.5,
-                        y as f32 - b.height as f32 / 2.0 + 0.5,
-                        0.0,
-                    ),
-                    ..default()
-                },
+                transform: Transform::from_xyz(
+                    x as f32 - b.width as f32 / 2.0 + 0.5,
+                    y as f32 - b.height as f32 / 2.0 + 0.5,
+                    -1.0,
+                ),
                 ..default()
             });
         }
@@ -230,6 +229,7 @@ fn reset_game(
     bullet_query: Query<Entity, With<Bullet>>,
     mut commands: Commands,
     mut apples: ResMut<Apples>,
+    mut walls: ResMut<Walls>,
     mut game_timer: ResMut<GameTimer>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     b: Res<Board>,
@@ -243,10 +243,16 @@ fn reset_game(
     for bullet_entity in bullet_query.iter() {
         commands.entity(bullet_entity).despawn();
     }
+
     for apple in apples.list.iter().clone() {
         commands.entity(*apple.1).despawn();
     }
     apples.list = HashMap::new();
+
+    for apple in walls.list.iter().clone() {
+        commands.entity(*apple.1).despawn();
+    }
+    walls.list = HashMap::new();
 
     for _ in 0..3 {
         apple_ev.send(AppleEv::SpawnRandom);
@@ -312,7 +318,7 @@ fn reset_game(
         ],
     ];
 
-    let transform = Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 10.0);
+    let transform = Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 0.0);
 
     for i in 0..settings.snake_count as usize {
         commands
