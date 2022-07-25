@@ -49,6 +49,12 @@ fn wall_system(
         IVec2::new(b.width - 1, b.height - 2),
         IVec2::new(b.width - 2, b.height - 1),
     ];
+    let corner_cases = vec![
+        (IVec2::new(2, 0), IVec2::new(2, 0)),
+        (IVec2::new(0, b.height - 3), IVec2::new(2, b.height - 1)),
+        (IVec2::new(b.width - 3, 0), IVec2::new(b.width - 1, 2)),
+        (IVec2::new(b.width - 3, b.height - 1), IVec2::new(b.width - 1, b.height - 3)),
+    ];
     let is_valid = |pos, walls: &Walls| {
         // stop snake getting stuck in corner
         if unspawnable_positions.contains(&pos) {
@@ -91,6 +97,11 @@ fn wall_system(
                 if pos == *wall + IVec2::new(2, 0) || pos == *wall + IVec2::new(-2, 0) {
                     return false;
                 }
+            }
+
+            // stop a special case in the corner
+            if corner_cases.contains(&(*wall, pos)) || corner_cases.contains(&(pos, *wall)) {
+                return false;
             }
         }
 
