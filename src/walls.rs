@@ -97,39 +97,48 @@ fn wall_system(
         return true;
     };
 
-    for _ in wall_ev.iter() {
-        let mut count = 0;
-        let mut pos;
-        'wall: loop {
-            pos = IVec2::new(rng.gen_range(0..b.width), rng.gen_range(0..b.height));
+    for wall_ev in wall_ev.iter() {
+        match wall_ev {
+            WallEv::Spawn => {
+                let mut count = 0;
+                let mut pos;
+                'wall: loop {
+                    pos = IVec2::new(rng.gen_range(0..b.width), rng.gen_range(0..b.height));
 
-            count += 1;
-            if count > 1000 {
-                return;
+                    count += 1;
+                    if count > 1000 {
+                        return;
+                    }
+
+                    if is_valid(pos, &walls) {
+                        break 'wall;
+                    }
+                }
+
+                walls.list.insert(
+                    pos,
+                    commands
+                        .spawn_bundle(SpriteBundle {
+                            sprite: Sprite {
+                                color: Color::rgb(0.1, 0.1, 0.1),
+                                ..default()
+                            },
+                            transform: Transform::from_xyz(
+                                pos.x as f32 - b.width as f32 / 2.0 + 0.5,
+                                pos.y as f32 - b.height as f32 / 2.0 + 0.5,
+                                5.0,
+                            ),
+                            ..default()
+                        })
+                        .id(),
+                );
             }
-
-            if is_valid(pos, &walls) {
-                break 'wall;
+            WallEv::Destroy(pos) => {
+                if let Some(entity) = walls.list.remove(&pos) {
+                    commands.entity(entity).despawn();
+                }
             }
         }
-
-        walls.list.insert(
-            pos,
-            commands
-                .spawn_bundle(SpriteBundle {
-                    sprite: Sprite {
-                        color: Color::rgb(0.1, 0.1, 0.1),
-                        ..default()
-                    },
-                    transform: Transform::from_xyz(
-                        pos.x as f32 - b.width as f32 / 2.0 + 0.5,
-                        pos.y as f32 - b.height as f32 / 2.0 + 0.5,
-                        5.0,
-                    ),
-                    ..default()
-                })
-                .id(),
-        );
     }
 
     for entity in debug_gizmo_query.iter() {

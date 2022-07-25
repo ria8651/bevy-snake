@@ -30,10 +30,19 @@ pub enum GameState {
     GameOver,
 }
 
+#[derive(PartialEq, Eq)]
+pub enum BoardSize {
+    Small,
+    Medium,
+    Large,
+}
+
 pub struct Settings {
     pub interpolation: bool,
     pub tps: f32,
     pub snake_count: u32,
+    pub apple_count: u32,
+    pub board_size: BoardSize,
     pub walls: bool,
     pub walls_debug: bool,
     // pub board_size: IVec2,
@@ -58,6 +67,11 @@ struct Colours {
     colours: Vec<Color>,
 }
 
+#[derive(Component)]
+struct BoardTile;
+#[derive(Component)]
+struct MainCamera;
+
 fn main() {
     let movment_timer = Timer::from_seconds(1.0 / 4.0, true);
 
@@ -76,15 +90,19 @@ fn main() {
         })
         .insert_resource(ClearColor(Color::rgb(0.1, 0.1, 0.1)))
         .insert_resource(Board {
-            width: 17,
-            height: 15,
+            width: 10,
+            height: 9,
+            // width: 17,
+            // height: 15,
             colour1: Color::rgb(0.3, 0.5, 0.3),
             colour2: Color::rgb(0.25, 0.45, 0.25),
         })
         .insert_resource(Settings {
             interpolation: true,
             tps: 5.0,
-            snake_count: 4,
+            snake_count: 1,
+            apple_count: 3,
+            board_size: BoardSize::Medium,
             walls: false,
             walls_debug: false,
             boom_texture_atlas_handle: None,
@@ -133,11 +151,12 @@ fn game_state(
     mut game_state: ResMut<State<GameState>>,
     keys: Res<Input<KeyCode>>,
     snake_query: Query<&Snake>,
+    settings: Res<Settings>,
 ) {
     match game_state.current() {
         GameState::Menu => game_state.set(GameState::Playing).unwrap(),
         GameState::Playing => {
-            if snake_query.iter().count() < 1 {
+            if snake_query.iter().count() <= (settings.snake_count != 1) as usize {
                 game_state.set(GameState::GameOver).unwrap();
             }
             if keys.just_pressed(KeyCode::P) {
@@ -168,35 +187,17 @@ fn scene_setup(
     apples.sprite = Some(asset_server.load("images/apple.png"));
 
     commands.spawn_bundle(UiCameraBundle::default());
-    commands.spawn_bundle(OrthographicCameraBundle {
-        orthographic_projection: OrthographicProjection {
-            scaling_mode: ScalingMode::FixedVertical,
-            scale: b.height as f32 / 2.0,
-            ..Default::default()
-        },
-        transform: Transform::from_xyz(0.0, 0.0, 500.0),
-        ..OrthographicCameraBundle::new_2d()
-    });
-
-    for x in 0..b.width {
-        for y in 0..b.height {
-            let color = if (x + y) % 2 == 0 {
-                b.colour1
-            } else {
-                b.colour2
-            };
-
-            commands.spawn_bundle(SpriteBundle {
-                sprite: Sprite { color, ..default() },
-                transform: Transform::from_xyz(
-                    x as f32 - b.width as f32 / 2.0 + 0.5,
-                    y as f32 - b.height as f32 / 2.0 + 0.5,
-                    -1.0,
-                ),
-                ..default()
-            });
-        }
-    }
+    commands
+        .spawn_bundle(OrthographicCameraBundle {
+            orthographic_projection: OrthographicProjection {
+                scaling_mode: ScalingMode::FixedVertical,
+                scale: b.height as f32 / 2.0,
+                ..Default::default()
+            },
+            transform: Transform::from_xyz(0.0, 0.0, 500.0),
+            ..OrthographicCameraBundle::new_2d()
+        })
+        .insert(MainCamera);
 
     let texture_handle = asset_server.load("images/spritesheet.png");
     let texture_atlas = TextureAtlas::from_grid(texture_handle, Vec2::new(512.0, 512.0), 31, 1);
@@ -221,22 +222,68 @@ fn settings_system(
     }
 
     game_timer.0.tick(time.delta());
-    settings.tps = (game_timer.0.elapsed_secs() * 0.1 + 5.0).clamp(5.0, 8.0);
+    settings.tps = (game_timer.0.elapsed_secs() * 0.1 + 5.0).clamp(5.0, 7.0);
 }
 
 fn reset_game(
     snake_query: Query<Entity, With<Snake>>,
     bullet_query: Query<Entity, With<Bullet>>,
+    board_query: Query<Entity, With<BoardTile>>,
+    mut camera_query: Query<&mut OrthographicProjection, With<MainCamera>>,
     mut commands: Commands,
     mut apples: ResMut<Apples>,
     mut walls: ResMut<Walls>,
     mut game_timer: ResMut<GameTimer>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    b: Res<Board>,
+    mut b: ResMut<Board>,
     mut apple_ev: EventWriter<AppleEv>,
     colours: Res<Colours>,
     settings: Res<Settings>,
 ) {
+    for tile in board_query.iter() {
+        commands.entity(tile).despawn();
+    }
+
+    match settings.board_size {
+        BoardSize::Small => {
+            b.width = 10;
+            b.height = 9;
+        }
+        BoardSize::Medium => {
+            b.width = 17;
+            b.height = 15;
+        }
+        BoardSize::Large => {
+            b.width = 24;
+            b.height = 21;
+        }
+    }
+
+    let mut camera_projection = camera_query.single_mut();
+    camera_projection.scale = b.height as f32 / 2.0;
+
+    for x in 0..b.width {
+        for y in 0..b.height {
+            let color = if (x + y) % 2 == 0 {
+                b.colour1
+            } else {
+                b.colour2
+            };
+
+            commands
+                .spawn_bundle(SpriteBundle {
+                    sprite: Sprite { color, ..default() },
+                    transform: Transform::from_xyz(
+                        x as f32 - b.width as f32 / 2.0 + 0.5,
+                        y as f32 - b.height as f32 / 2.0 + 0.5,
+                        -1.0,
+                    ),
+                    ..default()
+                })
+                .insert(BoardTile);
+        }
+    }
+
     for snake_entity in snake_query.iter() {
         commands.entity(snake_entity).despawn();
     }
@@ -254,7 +301,7 @@ fn reset_game(
     }
     walls.list = HashMap::new();
 
-    for _ in 0..3 {
+    for _ in 0..settings.apple_count {
         apple_ev.send(AppleEv::SpawnRandom);
     }
 
@@ -293,28 +340,28 @@ fn reset_game(
     ];
     let positions = vec![
         vec![
-            IVec2::new(12, 13),
-            IVec2::new(13, 13),
-            IVec2::new(14, 13),
-            IVec2::new(15, 13),
+            IVec2::new(4, b.height - 2),
+            IVec2::new(3, b.height - 2),
+            IVec2::new(2, b.height - 2),
+            IVec2::new(1, b.height - 2),
         ],
         vec![
-            IVec2::new(4, 1),
-            IVec2::new(3, 1),
-            IVec2::new(2, 1),
-            IVec2::new(1, 1),
+            IVec2::new(b.width - 5, 1),
+            IVec2::new(b.width - 4, 1),
+            IVec2::new(b.width - 3, 1),
+            IVec2::new(b.width - 2, 1),
         ],
         vec![
-            IVec2::new(12, 10),
-            IVec2::new(13, 10),
-            IVec2::new(14, 10),
-            IVec2::new(15, 10),
+            IVec2::new(b.width - 2, b.height - 5),
+            IVec2::new(b.width - 2, b.height - 4),
+            IVec2::new(b.width - 2, b.height - 3),
+            IVec2::new(b.width - 2, b.height - 2),
         ],
         vec![
-            IVec2::new(4, 4),
-            IVec2::new(3, 4),
-            IVec2::new(2, 4),
             IVec2::new(1, 4),
+            IVec2::new(1, 3),
+            IVec2::new(1, 2),
+            IVec2::new(1, 1),
         ],
     ];
 

@@ -130,7 +130,15 @@ fn ui_system(
                 game_state.set(GameState::GameOver).unwrap();
             }
 
-            ui.add(egui::Slider::new(&mut settings.snake_count, 1..=4).text("Players: "));
+            ui.horizontal(|ui| {
+                ui.label("Board size: ");
+                ui.selectable_value(&mut settings.board_size, BoardSize::Small, "Small");
+                ui.selectable_value(&mut settings.board_size, BoardSize::Medium, "Medium");
+                ui.selectable_value(&mut settings.board_size, BoardSize::Large, "Large");
+            });
+
+            ui.add(egui::Slider::new(&mut settings.snake_count, 1..=4).text("Players"));
+            ui.add(egui::Slider::new(&mut settings.apple_count, 1..=5).text("Number of apples"));
 
             ui.checkbox(&mut settings.walls, "Walls");
             ui.checkbox(&mut settings.walls_debug, "Walls debug");
