@@ -119,6 +119,7 @@ fn ui_system(
     mut game_state: ResMut<State<GameState>>,
     mut settings: ResMut<Settings>,
     mut wall_ev: EventWriter<WallEv>,
+    snake_query: Query<&Snake>,
 ) {
     // egui ui
     egui::Window::new("Settings")
@@ -157,12 +158,25 @@ fn ui_system(
 
     for (point_id, mut text, mut style) in point_query.iter_mut() {
         let id = point_id.0;
-        if points.points[id as usize] == 0 {
-            style.display = Display::None;
+        if settings.snake_count == 1 {
+            if id == 0 {
+                style.display = Display::Flex;
+                for snake in snake_query.iter() {
+                    if snake.id == 0 {
+                        text.sections[0].value = snake.body.len().to_string();
+                    }
+                }
+            } else {
+                style.display = Display::None;
+            }
         } else {
-            style.display = Display::Flex;
-        }
+            if points.points[id as usize] == 0 {
+                style.display = Display::None;
+            } else {
+                style.display = Display::Flex;
+            }
 
-        text.sections[0].value = points.points[id as usize].to_string();
+            text.sections[0].value = points.points[id as usize].to_string();
+        }
     }
 }
