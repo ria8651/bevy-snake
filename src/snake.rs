@@ -203,6 +203,8 @@ pub fn damage_snake_system(
     mut snake_query: Query<(&mut Snake, Entity)>,
     mut points: ResMut<Points>,
     mut apple_ev: EventWriter<AppleEv>,
+    mut game_state: ResMut<State<GameState>>,
+    settings: Res<Settings>,
 ) {
     let mut dead_snakes = Vec::new();
 
@@ -210,11 +212,17 @@ pub fn damage_snake_system(
         for (mut snake, snake_entity) in snake_query.iter_mut() {
             if snake.id == ev.snake_id {
                 if ev.snake_pos < 2 {
-                    if snake.body.len() > 0 {
-                        snake.body.remove(0);
+                    if settings.snake_count == 1 {
+                        game_state.set(GameState::GameOver).unwrap();
+                        return;
+                    } else {
+                        if snake.body.len() > 0 {
+                            snake.body.remove(0);
+                        }
+                        
+                        commands.entity(snake_entity).despawn();
+                        dead_snakes.push(snake.id);
                     }
-                    commands.entity(snake_entity).despawn();
-                    dead_snakes.push(snake.id);
                 }
 
                 for _ in ev.snake_pos..snake.body.len() {
