@@ -84,18 +84,15 @@ pub fn snake_system(
                 if last_in_queue != Direction::Down && last_in_queue != Direction::Up {
                     snake.input_queue.push_back(Direction::Up);
                 }
-            }
-            if keys.just_pressed(snake.input_map.down) {
+            } else if keys.just_pressed(snake.input_map.down) {
                 if last_in_queue != Direction::Up && last_in_queue != Direction::Down {
                     snake.input_queue.push_back(Direction::Down);
                 }
-            }
-            if keys.just_pressed(snake.input_map.left) {
+            } else if keys.just_pressed(snake.input_map.left) {
                 if last_in_queue != Direction::Right && last_in_queue != Direction::Left {
                     snake.input_queue.push_back(Direction::Left);
                 }
-            }
-            if keys.just_pressed(snake.input_map.right) {
+            } else if keys.just_pressed(snake.input_map.right) {
                 if last_in_queue != Direction::Left && last_in_queue != Direction::Right {
                     snake.input_queue.push_back(Direction::Right);
                 }

@@ -50,7 +50,7 @@ fn wall_system(
         IVec2::new(b.width - 2, b.height - 1),
     ];
     let corner_cases = vec![
-        (IVec2::new(2, 0), IVec2::new(2, 0)),
+        (IVec2::new(0, 2), IVec2::new(2, 0)),
         (IVec2::new(0, b.height - 3), IVec2::new(2, b.height - 1)),
         (IVec2::new(b.width - 3, 0), IVec2::new(b.width - 1, 2)),
         (IVec2::new(b.width - 3, b.height - 1), IVec2::new(b.width - 1, b.height - 3)),
