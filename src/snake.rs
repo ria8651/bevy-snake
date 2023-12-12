@@ -4,14 +4,16 @@ pub struct SnakePlugin;
 
 impl Plugin for SnakePlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(Points { points: [0; 4] })
-            .add_system(
+        app.insert_resource(Points { points: [0; 4] }).add_systems(
+            Update,
+            (
                 damage_snake_system
                     .after(snake_system)
                     .after(guns::bullet_system)
                     .before(game_state),
-            )
-            .add_system_set(SystemSet::on_update(GameState::Playing).with_system(snake_system));
+                snake_system.run_if(in_state(GameState::Playing)),
+            ),
+        );
     }
 }
 
@@ -185,10 +187,12 @@ pub fn snake_system(
     }
 }
 
+#[derive(Resource)]
 pub struct Points {
     pub points: [u32; 4],
 }
 
+#[derive(Event)]
 pub struct DamageSnakeEv {
     pub snake_id: u32,
     pub snake_pos: usize,
@@ -200,23 +204,23 @@ pub fn damage_snake_system(
     mut snake_query: Query<(&mut Snake, Entity)>,
     mut points: ResMut<Points>,
     mut apple_ev: EventWriter<AppleEv>,
-    mut game_state: ResMut<State<GameState>>,
+    mut next_game_state: ResMut<NextState<GameState>>,
     settings: Res<Settings>,
 ) {
     let mut dead_snakes = Vec::new();
 
-    for ev in damage_snake_ev.iter() {
+    for ev in damage_snake_ev.read() {
         for (mut snake, snake_entity) in snake_query.iter_mut() {
             if snake.id == ev.snake_id {
                 if ev.snake_pos < 2 {
                     if settings.snake_count == 1 {
-                        game_state.set(GameState::GameOver).unwrap();
+                        next_game_state.set(GameState::GameOver);
                         return;
                     } else {
                         if snake.body.len() > 0 {
                             snake.body.remove(0);
                         }
-                        
+
                         commands.entity(snake_entity).despawn();
                         dead_snakes.push(snake.id);
                     }
@@ -231,7 +235,7 @@ pub fn damage_snake_system(
         }
     }
 
-    for dead_snake_id in &dead_snakes {
+    for dead_snake_id in dead_snakes.iter() {
         for (snake, _) in snake_query.iter() {
             if snake.id != *dead_snake_id && !dead_snakes.contains(&snake.id) {
                 points.points[snake.id as usize] += 1;

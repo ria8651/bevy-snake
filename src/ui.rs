@@ -1,17 +1,16 @@
 use super::*;
-use bevy_egui::{egui, EguiContext, EguiPlugin};
-
-// const BUTTON_COLOUR: Color = Color::rgb(0.4, 0.4, 0.4);
-// const BUTTON_HOVER: Color = Color::rgb(0.5, 0.5, 0.5);
-// const BUTTON_PRESS: Color = Color::rgb(0.3, 0.8, 0.1);
+use bevy_inspector_egui::{
+    bevy_egui::{EguiContexts, EguiPlugin},
+    egui,
+};
 
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugin(EguiPlugin)
-            .add_startup_system(ui_setup)
-            .add_system(ui_system);
+        app.add_plugins(EguiPlugin)
+            .add_systems(Startup, ui_setup)
+            .add_systems(Update, ui_system);
     }
 }
 
@@ -19,76 +18,25 @@ impl Plugin for UiPlugin {
 struct PointId(u32);
 
 fn ui_setup(mut commands: Commands, asset_server: Res<AssetServer>, colours: Res<Colours>) {
-    // ui camera
-    commands.spawn_bundle(UiCameraBundle::default());
-
-    // // button bundle
-    // let button = ButtonBundle {
-    //     style: Style {
-    //         justify_content: JustifyContent::Center,
-    //         align_items: AlignItems::Center,
-    //         margin: Rect {
-    //             left: Val::Px(0.0),
-    //             right: Val::Px(0.0),
-    //             top: Val::Px(0.0),
-    //             bottom: Val::Px(25.0),
-    //         },
-    //         size: Size::new(Val::Px(150.0), Val::Px(40.0)),
-    //         ..default()
-    //     },
-    //     color: BUTTON_COLOUR.into(),
-    //     ..default()
-    // };
-
-    // // pause menu
-    // commands
-    //     .spawn_bundle(NodeBundle {
-    //         style: Style {
-    //             position_type: PositionType::Absolute,
-    //             align_items: AlignItems::Center,
-    //             justify_content: JustifyContent::Center,
-    //             size: Size::new(Val::Percent(100.0), Val::Percent(100.0)),
-    //             ..default()
-    //         },
-    //         color: Color::rgba(0.0, 0.0, 0.0, 0.5).into(),
-    //         ..default()
-    //     })
-    //     .with_children(|parent| {
-    //         parent
-    //             .spawn_bundle(NodeBundle {
-    //                 style: Style {
-    //                     align_items: AlignItems::Center,
-    //                     flex_direction: FlexDirection::Column,
-    //                     padding: Rect::all(Val::Px(25.0)),
-    //                     ..default()
-    //                 },
-    //                 color: Color::rgb(0.3, 0.3, 0.3).into(),
-    //                 ..default()
-    //             })
-    //             .with_children(|parent| {
-    //                 parent.spawn_bundle(button.clone());
-    //                 parent.spawn_bundle(button.clone());
-    //             });
-    //     });
-
     // point counters
     commands
-        .spawn_bundle(NodeBundle {
+        .spawn(NodeBundle {
             style: Style {
                 position_type: PositionType::Absolute,
-                align_items: AlignItems::FlexEnd,
-                align_content: AlignContent::FlexEnd,
+                align_items: AlignItems::FlexStart,
+                align_content: AlignContent::FlexStart,
                 justify_content: JustifyContent::Center,
-                size: Size::new(Val::Percent(100.0), Val::Percent(100.0)),
+                height: Val::Percent(100.0),
+                width: Val::Percent(100.0),
                 ..default()
             },
-            color: Color::NONE.into(),
+            background_color: Color::NONE.into(),
             ..default()
         })
         .with_children(|parent| {
             for i in 0..4 {
                 parent
-                    .spawn_bundle(TextBundle {
+                    .spawn(TextBundle {
                         text: Text {
                             sections: vec![TextSection {
                                 value: i.to_string(),
@@ -101,7 +49,8 @@ fn ui_setup(mut commands: Commands, asset_server: Res<AssetServer>, colours: Res
                             ..default()
                         },
                         style: Style {
-                            size: Size::new(Val::Px(50.0), Val::Px(50.0)),
+                            width: Val::Px(50.0),
+                            height: Val::Px(50.0),
                             ..default()
                         },
 
@@ -115,46 +64,54 @@ fn ui_setup(mut commands: Commands, asset_server: Res<AssetServer>, colours: Res
 fn ui_system(
     mut point_query: Query<(&PointId, &mut Text, &mut Style)>,
     points: Res<snake::Points>,
-    mut egui_context: ResMut<EguiContext>,
-    mut game_state: ResMut<State<GameState>>,
+    mut contexts: EguiContexts,
     mut settings: ResMut<Settings>,
     mut wall_ev: EventWriter<WallEv>,
     snake_query: Query<&Snake>,
 ) {
-    // egui ui
-    egui::Window::new("Settings")
-        .anchor(egui::Align2::RIGHT_TOP, [-5.0, 5.0])
-        .show(egui_context.ctx_mut(), |ui| {
-            ui.label(format!("tps: {:.1}", settings.tps));
+    egui::Window::new("Settings").show(contexts.ctx_mut(), |ui| {
+        ui.label(format!("tps: {:.1}", settings.tps));
 
-            if ui.button("End game").clicked() {
-                game_state.set(GameState::GameOver).unwrap();
-            }
+        ui.add(egui::Slider::new(&mut settings.snake_count, 1..=4).text("Players"));
 
+        ui.checkbox(&mut settings.tps_ramp, "Speed ramp");
+        if !settings.tps_ramp {
             ui.horizontal(|ui| {
-                ui.label("Board size: ");
-                ui.selectable_value(&mut settings.board_size, BoardSize::Small, "Small");
-                ui.selectable_value(&mut settings.board_size, BoardSize::Medium, "Medium");
-                ui.selectable_value(&mut settings.board_size, BoardSize::Large, "Large");
+                ui.label("Speed: ");
+                ui.selectable_value(&mut settings.tps, 5.0, "Slow");
+                ui.selectable_value(&mut settings.tps, 8.0, "Medium");
+                ui.selectable_value(&mut settings.tps, 12.0, "Fast");
             });
+        }
 
-            ui.add(egui::Slider::new(&mut settings.snake_count, 1..=4).text("Players"));
-            ui.add(egui::Slider::new(&mut settings.apple_count, 1..=5).text("Number of apples"));
-
-            ui.checkbox(&mut settings.walls, "Walls");
-            ui.checkbox(&mut settings.walls_debug, "Walls debug");
-
-            if ui.button("Spawn wall").clicked() {
-                wall_ev.send(WallEv::Spawn);
-            }
-
-            ui.label("Controls");
-            ui.label("Snake 1: WASD to move, LShift to shoot");
-            ui.label("Snake 2: Arrows to move, RAlt to shoot");
-            ui.label("Snake 3: PL;' to move, \\ to shoot");
-            ui.label("Snake 4: YGHJ to move, B to shoot");
-            ui.label("Space to restart");
+        ui.horizontal(|ui| {
+            ui.label("Board size: ");
+            ui.selectable_value(&mut settings.board_size, BoardSize::Small, "Small");
+            ui.selectable_value(&mut settings.board_size, BoardSize::Medium, "Medium");
+            ui.selectable_value(&mut settings.board_size, BoardSize::Large, "Large");
         });
+
+        ui.horizontal(|ui| {
+            ui.label("Apples: ");
+            ui.selectable_value(&mut settings.apple_count, 1, "One");
+            ui.selectable_value(&mut settings.apple_count, 3, "Three");
+            ui.selectable_value(&mut settings.apple_count, 5, "Five");
+        });
+
+        ui.checkbox(&mut settings.walls, "Walls");
+        ui.checkbox(&mut settings.walls_debug, "Walls debug");
+
+        if ui.button("Spawn wall").clicked() {
+            wall_ev.send(WallEv::Spawn);
+        }
+
+        ui.label("Controls");
+        ui.label("Snake 1: WASD to move, LShift to shoot");
+        ui.label("Snake 2: Arrows to move, RAlt to shoot");
+        ui.label("Snake 3: PL;' to move, \\ to shoot");
+        ui.label("Snake 4: YGHJ to move, B to shoot");
+        ui.label("Space to restart");
+    });
 
     for (point_id, mut text, mut style) in point_query.iter_mut() {
         let id = point_id.0;

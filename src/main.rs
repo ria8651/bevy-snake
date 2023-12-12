@@ -4,7 +4,6 @@ use bevy::{
     render::{camera::ScalingMode, mesh::PrimitiveTopology},
     sprite::{MaterialMesh2dBundle, Mesh2dHandle},
 };
-use bevy_kira_audio::{Audio, AudioPlugin, AudioSource};
 use effects::ExplosionEv;
 use guns::{Bullet, SpawnBulletEv};
 use meshing::*;
@@ -15,15 +14,15 @@ use walls::{WallEv, Walls};
 
 mod apples;
 mod effects;
-mod fps_counter;
 mod guns;
 mod meshing;
 mod snake;
 mod ui;
 mod walls;
 
-#[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
+#[derive(PartialEq, Eq, Hash, Default, Copy, Clone, Debug, States)]
 pub enum GameState {
+    #[default]
     Menu,
     Playing,
     Paused,
@@ -37,19 +36,28 @@ pub enum BoardSize {
     Large,
 }
 
+#[derive(PartialEq, Eq)]
+pub enum Speed {
+    Slow,
+    Medium,
+    Fast,
+}
+
+#[derive(Resource)]
 pub struct Settings {
     pub interpolation: bool,
     pub tps: f32,
+    pub tps_ramp: bool,
     pub snake_count: u32,
     pub apple_count: u32,
     pub board_size: BoardSize,
     pub walls: bool,
     pub walls_debug: bool,
-    // pub board_size: IVec2,
     pub boom_texture_atlas_handle: Option<Handle<TextureAtlas>>,
     pub boom_sound_handle: Option<Handle<AudioSource>>,
 }
 
+#[derive(Resource)]
 pub struct Board {
     width: i32,
     height: i32,
@@ -57,12 +65,16 @@ pub struct Board {
     colour2: Color,
 }
 
+#[derive(Resource)]
 pub struct MovmentTimer(Timer);
+#[derive(Resource)]
 pub struct BulletTimer(Timer);
-pub struct GameTimer(Timer);
+#[derive(Resource, Default)]
+pub struct GameTime(f32);
 #[derive(Component, Deref, DerefMut)]
 pub struct AnimationTimer(Timer);
 
+#[derive(Resource)]
 struct Colours {
     colours: Vec<Color>,
 }
@@ -73,33 +85,36 @@ struct BoardTile;
 struct MainCamera;
 
 fn main() {
-    let movment_timer = Timer::from_seconds(1.0 / 4.0, true);
+    let movment_timer = Timer::from_seconds(1.0 / 4.0, TimerMode::Repeating);
 
-    let mut app = App::new();
-
-    #[cfg(target_arch = "wasm32")]
-    {
-        app.add_plugin(bevy_web_resizer::Plugin);
-    }
-
-    app.add_plugins(DefaultPlugins)
-        .add_plugin(AudioPlugin)
-        .insert_resource(WindowDescriptor {
-            title: "Snake".to_string(),
-            ..default()
-        })
+    App::new()
+        .add_plugins((
+            DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "Snake, WITH GUNS!".to_string(),
+                    fit_canvas_to_parent: true,
+                    ..default()
+                }),
+                ..default()
+            }),
+            effects::EffectsPlugin,
+            ui::UiPlugin,
+            snake::SnakePlugin,
+            walls::WallPlugin,
+            guns::GunPlugin,
+            apples::ApplePlugin,
+        ))
         .insert_resource(ClearColor(Color::rgb(0.1, 0.1, 0.1)))
         .insert_resource(Board {
             width: 10,
             height: 9,
-            // width: 17,
-            // height: 15,
             colour1: Color::rgb(0.3, 0.5, 0.3),
             colour2: Color::rgb(0.25, 0.45, 0.25),
         })
         .insert_resource(Settings {
             interpolation: true,
-            tps: 5.0,
+            tps: 8.0,
+            tps_ramp: false,
             snake_count: 1,
             apple_count: 3,
             board_size: BoardSize::Medium,
@@ -110,7 +125,7 @@ fn main() {
         })
         .insert_resource(MovmentTimer(movment_timer.clone()))
         .insert_resource(BulletTimer(movment_timer))
-        .insert_resource(GameTimer(Timer::from_seconds(99999.0, false)))
+        .insert_resource(GameTime::default())
         .insert_resource(Apples {
             list: HashMap::new(),
             sprite: None,
@@ -126,53 +141,39 @@ fn main() {
                 Color::rgb(0.7, 0.7, 0.7),
             ],
         })
-        .add_plugin(fps_counter::FpsCounter)
-        .add_plugin(effects::EffectsPlugin)
-        .add_plugin(ui::UiPlugin)
-        .add_plugin(snake::SnakePlugin)
-        .add_plugin(walls::WallPlugin)
-        .add_plugin(guns::GunPlugin)
-        .add_plugin(apples::ApplePlugin)
-        .add_system(bevy::input::system::exit_on_esc_system)
-        .add_state(GameState::Menu)
+        .add_state::<GameState>()
         .add_event::<ExplosionEv>()
         .add_event::<DamageSnakeEv>()
         .add_event::<SpawnBulletEv>()
         .add_event::<AppleEv>()
         .add_event::<WallEv>()
-        .add_startup_system(scene_setup)
-        .add_system(game_state)
-        .add_system_set(SystemSet::on_update(GameState::Playing).with_system(settings_system))
-        .add_system_set(SystemSet::on_enter(GameState::Playing).with_system(reset_game))
+        .add_systems(Startup, scene_setup)
+        .add_systems(Update, game_state)
+        .add_systems(OnEnter(GameState::Playing), reset_game)
+        .add_systems(Update, settings_system.run_if(in_state(GameState::Playing)))
         .run();
 }
 
 fn game_state(
-    mut game_state: ResMut<State<GameState>>,
+    game_state: Res<State<GameState>>,
+    mut next_game_state: ResMut<NextState<GameState>>,
     keys: Res<Input<KeyCode>>,
     snake_query: Query<&Snake>,
     settings: Res<Settings>,
 ) {
-    match game_state.current() {
-        GameState::Menu => game_state.set(GameState::Playing).unwrap(),
+    match game_state.get() {
+        GameState::Menu => next_game_state.set(GameState::Playing),
         GameState::Playing => {
             if snake_query.iter().count() <= (settings.snake_count != 1) as usize {
-                game_state.set(GameState::GameOver).unwrap();
-            }
-            if keys.just_pressed(KeyCode::P) {
-                game_state.push(GameState::Paused).unwrap();
-            }
-        }
-        GameState::Paused => {
-            if keys.just_pressed(KeyCode::P) {
-                game_state.pop().unwrap();
+                next_game_state.set(GameState::GameOver);
             }
         }
         GameState::GameOver => {
             if keys.just_pressed(KeyCode::Space) {
-                game_state.set(GameState::Playing).unwrap();
+                next_game_state.set(GameState::Playing);
             }
         }
+        _ => {}
     }
 }
 
@@ -186,21 +187,21 @@ fn scene_setup(
 ) {
     apples.sprite = Some(asset_server.load("images/apple.png"));
 
-    commands.spawn_bundle(UiCameraBundle::default());
-    commands
-        .spawn_bundle(OrthographicCameraBundle {
-            orthographic_projection: OrthographicProjection {
-                scaling_mode: ScalingMode::FixedVertical,
-                scale: b.height as f32 / 2.0,
-                ..Default::default()
+    commands.spawn((
+        Camera2dBundle {
+            projection: OrthographicProjection {
+                scaling_mode: ScalingMode::FixedVertical(b.height as f32),
+                ..default()
             },
             transform: Transform::from_xyz(0.0, 0.0, 500.0),
-            ..OrthographicCameraBundle::new_2d()
-        })
-        .insert(MainCamera);
+            ..default()
+        },
+        MainCamera,
+    ));
 
     let texture_handle = asset_server.load("images/spritesheet.png");
-    let texture_atlas = TextureAtlas::from_grid(texture_handle, Vec2::new(512.0, 512.0), 31, 1);
+    let texture_atlas =
+        TextureAtlas::from_grid(texture_handle, Vec2::new(512.0, 512.0), 31, 1, None, None);
     let texture_atlas_handle = texture_atlases.add(texture_atlas);
     settings.boom_texture_atlas_handle = Some(texture_atlas_handle);
 
@@ -214,15 +215,17 @@ fn scene_setup(
 fn settings_system(
     mut settings: ResMut<Settings>,
     keys: Res<Input<KeyCode>>,
-    mut game_timer: ResMut<GameTimer>,
+    mut game_time: ResMut<GameTime>,
     time: Res<Time>,
 ) {
     if keys.just_pressed(KeyCode::I) {
         settings.interpolation = !settings.interpolation;
     }
 
-    game_timer.0.tick(time.delta());
-    settings.tps = (game_timer.0.elapsed_secs() * 0.1 + 5.0).clamp(5.0, 7.0);
+    game_time.0 += time.delta_seconds();
+    if settings.tps_ramp {
+        settings.tps = (game_time.0 * 0.1 + 5.0).clamp(5.0, 7.0);
+    }
 }
 
 fn reset_game(
@@ -233,7 +236,7 @@ fn reset_game(
     mut commands: Commands,
     mut apples: ResMut<Apples>,
     mut walls: ResMut<Walls>,
-    mut game_timer: ResMut<GameTimer>,
+    mut game_time: ResMut<GameTime>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut b: ResMut<Board>,
     mut apple_ev: EventWriter<AppleEv>,
@@ -260,7 +263,7 @@ fn reset_game(
     }
 
     let mut camera_projection = camera_query.single_mut();
-    camera_projection.scale = b.height as f32 / 2.0;
+    camera_projection.scaling_mode = ScalingMode::FixedVertical(b.height as f32);
 
     for x in 0..b.width {
         for y in 0..b.height {
@@ -270,8 +273,8 @@ fn reset_game(
                 b.colour2
             };
 
-            commands
-                .spawn_bundle(SpriteBundle {
+            commands.spawn((
+                SpriteBundle {
                     sprite: Sprite { color, ..default() },
                     transform: Transform::from_xyz(
                         x as f32 - b.width as f32 / 2.0 + 0.5,
@@ -279,8 +282,9 @@ fn reset_game(
                         -1.0,
                     ),
                     ..default()
-                })
-                .insert(BoardTile);
+                },
+                BoardTile,
+            ));
         }
     }
 
@@ -305,7 +309,7 @@ fn reset_game(
         apple_ev.send(AppleEv::SpawnRandom);
     }
 
-    game_timer.0.reset();
+    game_time.0 = 0.0;
 
     // spawn in new snakes
     let snake_controls = vec![
@@ -314,14 +318,14 @@ fn reset_game(
             down: KeyCode::S,
             left: KeyCode::A,
             right: KeyCode::D,
-            shoot: KeyCode::LShift,
+            shoot: KeyCode::ShiftLeft,
         },
         InputMap {
             up: KeyCode::Up,
             down: KeyCode::Down,
             left: KeyCode::Left,
             right: KeyCode::Right,
-            shoot: KeyCode::RAlt,
+            shoot: KeyCode::AltRight,
         },
         InputMap {
             up: KeyCode::P,
@@ -368,18 +372,19 @@ fn reset_game(
     let transform = Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 0.0);
 
     for i in 0..settings.snake_count as usize {
-        commands
-            .spawn_bundle(MaterialMesh2dBundle {
+        commands.spawn((
+            MaterialMesh2dBundle {
                 material: materials.add(ColorMaterial::from(colours.colours[i])),
                 transform,
                 ..default()
-            })
-            .insert(Snake {
+            },
+            Snake {
                 id: i as u32,
                 body: positions[i].clone(),
                 input_map: snake_controls[i],
                 ..Default::default()
-            });
+            },
+        ));
     }
 }
 

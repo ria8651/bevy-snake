@@ -4,25 +4,24 @@ pub struct ApplePlugin;
 
 impl Plugin for ApplePlugin {
     fn build(&self, app: &mut App) {
-        app.add_system_set(
-            SystemSet::on_update(GameState::Playing).with_system(
-                apple_system
-                    .after(snake::damage_snake_system)
-                    .after(snake::snake_system)
-                    .after(reset_game),
-            ),
+        app.add_systems(
+            Update,
+            apple_system
+                .run_if(in_state(GameState::Playing))
+                .after(snake::damage_snake_system)
+                .after(snake::snake_system)
+                .after(reset_game),
         );
     }
 }
 
+#[derive(Resource)]
 pub struct Apples {
     pub list: HashMap<IVec2, Entity>,
     pub sprite: Option<Handle<Image>>,
 }
 
-// struct AppleEv(AppleSpawn);
-
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Event)]
 pub enum AppleEv {
     SpawnRandom,
     SpawnPos(IVec2),
@@ -41,7 +40,7 @@ fn apple_system(
 ) {
     let mut rng = rand::thread_rng();
 
-    for apple_ev in apple_ev.iter() {
+    for apple_ev in apple_ev.read() {
         match apple_ev {
             AppleEv::SpawnRandom | AppleEv::SpawnPos(_) => {
                 let mut count = 0;
@@ -75,7 +74,7 @@ fn apple_system(
                 apples.list.insert(
                     pos,
                     commands
-                        .spawn_bundle(SpriteBundle {
+                        .spawn(SpriteBundle {
                             texture: texture,
                             transform: Transform::from_xyz(
                                 pos.x as f32 - b.width as f32 / 2.0 + 0.5,

@@ -4,21 +4,23 @@ pub struct WallPlugin;
 
 impl Plugin for WallPlugin {
     fn build(&self, app: &mut App) {
-        app.add_system_set(
-            SystemSet::on_update(GameState::Playing).with_system(
-                wall_system
-                    .after(snake::damage_snake_system)
-                    .after(snake::snake_system)
-                    .after(reset_game),
-            ),
+        app.add_systems(
+            Update,
+            wall_system
+                .run_if(in_state(GameState::Playing))
+                .after(snake::damage_snake_system)
+                .after(snake::snake_system)
+                .after(reset_game),
         );
     }
 }
 
+#[derive(Resource)]
 pub struct Walls {
     pub list: HashMap<IVec2, Entity>,
 }
 
+#[derive(Event)]
 pub enum WallEv {
     Spawn,
     Destroy(IVec2),
@@ -53,7 +55,10 @@ fn wall_system(
         (IVec2::new(0, 2), IVec2::new(2, 0)),
         (IVec2::new(0, b.height - 3), IVec2::new(2, b.height - 1)),
         (IVec2::new(b.width - 3, 0), IVec2::new(b.width - 1, 2)),
-        (IVec2::new(b.width - 3, b.height - 1), IVec2::new(b.width - 1, b.height - 3)),
+        (
+            IVec2::new(b.width - 3, b.height - 1),
+            IVec2::new(b.width - 1, b.height - 3),
+        ),
     ];
     let is_valid = |pos, walls: &Walls| {
         // stop snake getting stuck in corner
@@ -108,7 +113,7 @@ fn wall_system(
         return true;
     };
 
-    for wall_ev in wall_ev.iter() {
+    for wall_ev in wall_ev.read() {
         match wall_ev {
             WallEv::Spawn => {
                 let mut count = 0;
@@ -129,7 +134,7 @@ fn wall_system(
                 walls.list.insert(
                     pos,
                     commands
-                        .spawn_bundle(SpriteBundle {
+                        .spawn(SpriteBundle {
                             sprite: Sprite {
                                 color: Color::rgb(0.1, 0.1, 0.1),
                                 ..default()
@@ -161,8 +166,8 @@ fn wall_system(
             for y in 0..b.height {
                 let pos = IVec2::new(x, y);
                 if !is_valid(pos, &walls) {
-                    commands
-                        .spawn_bundle(SpriteBundle {
+                    commands.spawn((
+                        SpriteBundle {
                             sprite: Sprite {
                                 color: Color::rgba(1.0, 0.1, 0.1, 0.2),
                                 ..default()
@@ -173,8 +178,9 @@ fn wall_system(
                                 4.0,
                             ),
                             ..default()
-                        })
-                        .insert(DebugGizmo);
+                        },
+                        DebugGizmo,
+                    ));
                 }
             }
         }

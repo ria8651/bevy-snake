@@ -1,6 +1,3 @@
 /target
-/src/main.rs
-/out
+/builds
 *.afdesign
-/web
-/.cargo

@@ -4,11 +4,17 @@ pub struct GunPlugin;
 
 impl Plugin for GunPlugin {
     fn build(&self, app: &mut App) {
-        app.add_system(bullet_spawner.after(snake::snake_system))
-            .add_system_set(SystemSet::on_update(GameState::Playing).with_system(bullet_system));
+        app.add_systems(
+            Update,
+            (
+                bullet_spawner.after(snake::snake_system),
+                bullet_system.run_if(in_state(GameState::Playing)),
+            ),
+        );
     }
 }
 
+#[derive(Event)]
 pub struct SpawnBulletEv(pub Bullet);
 
 #[derive(Component, Clone, Copy)]
@@ -27,7 +33,7 @@ pub fn bullet_spawner(
     mut snake_query: Query<&mut Snake>,
     b: Res<Board>,
 ) {
-    for ev in bullet_spawn_ev.iter() {
+    for ev in bullet_spawn_ev.read() {
         let bullet = ev.0;
 
         for mut snake in snake_query.iter_mut() {
@@ -39,8 +45,8 @@ pub fn bullet_spawner(
             }
         }
 
-        commands
-            .spawn_bundle(MaterialMesh2dBundle {
+        commands.spawn((
+            MaterialMesh2dBundle {
                 mesh: meshes
                     .add(Mesh::from(shape::Quad::new(Vec2::new(0.2, 0.2))))
                     .into(),
@@ -51,8 +57,9 @@ pub fn bullet_spawner(
                     11.0,
                 ),
                 ..default()
-            })
-            .insert(bullet);
+            },
+            bullet,
+        ));
     }
 }
 
