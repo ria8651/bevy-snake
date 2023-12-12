@@ -45,7 +45,10 @@ fn explosion_system(
             AnimationTimer(Timer::from_seconds(0.04, TimerMode::Repeating)),
         ));
 
-        // audio.play(settings.boom_sound_handle.as_ref().unwrap().clone());
+        commands.spawn(AudioBundle {
+            source: settings.boom_sound_handle.as_ref().unwrap().clone(),
+            ..default()
+        });
     }
 
     for (mut timer, mut sprite, texture_atlas_handle, entity) in query.iter_mut() {
