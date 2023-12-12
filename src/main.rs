@@ -113,7 +113,7 @@ fn main() {
         })
         .insert_resource(Settings {
             interpolation: true,
-            tps: 8.0,
+            tps: 7.5,
             tps_ramp: false,
             snake_count: 1,
             apple_count: 3,

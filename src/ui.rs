@@ -79,8 +79,8 @@ fn ui_system(
             ui.horizontal(|ui| {
                 ui.label("Speed: ");
                 ui.selectable_value(&mut settings.tps, 5.0, "Slow");
-                ui.selectable_value(&mut settings.tps, 8.0, "Medium");
-                ui.selectable_value(&mut settings.tps, 12.0, "Fast");
+                ui.selectable_value(&mut settings.tps, 7.5, "Medium");
+                ui.selectable_value(&mut settings.tps, 10.0, "Fast");
             });
         }
 

@@ -2,6 +2,8 @@
 
 A simple snake game, inspired by google snake. Adds multiplayer and GUNS!!
 
+Web demo: <https://bink.eu.org/snake/>
+
 ## Building
 
 Just clone the repo and run:
