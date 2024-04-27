@@ -47,9 +47,7 @@ pub fn bullet_spawner(
 
         commands.spawn((
             MaterialMesh2dBundle {
-                mesh: meshes
-                    .add(Mesh::from(shape::Quad::new(Vec2::new(0.2, 0.2))))
-                    .into(),
+                mesh: meshes.add(Rectangle::new(0.2, 0.2)).into(),
                 material: materials.add(ColorMaterial::from(Color::rgb(1.0, 1.0, 0.26))),
                 transform: Transform::from_xyz(
                     -b.width as f32 / 2.0 + bullet.pos.x as f32 + 0.5,

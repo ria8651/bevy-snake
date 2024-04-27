@@ -33,11 +33,11 @@ impl Default for Snake {
             id: 0,
             body: Vec::new(),
             input_map: InputMap {
-                up: KeyCode::W,
-                down: KeyCode::S,
-                left: KeyCode::A,
-                right: KeyCode::D,
-                shoot: KeyCode::R,
+                up: KeyCode::KeyW,
+                down: KeyCode::KeyS,
+                left: KeyCode::KeyA,
+                right: KeyCode::KeyD,
+                shoot: KeyCode::KeyR,
             },
             input_queue: VecDeque::new(),
             head_dir: IVec2::new(0, 0),
@@ -58,16 +58,16 @@ pub struct InputMap {
 pub fn snake_system(
     mut snake_query: Query<(&mut Snake, &mut Mesh2dHandle)>,
     mut meshes: ResMut<Assets<Mesh>>,
-    time: Res<Time>,
     mut timer: ResMut<MovmentTimer>,
-    keys: Res<Input<KeyCode>>,
+    mut damage_ev: EventWriter<DamageSnakeEv>,
+    mut spawn_bullet_ev: EventWriter<SpawnBulletEv>,
+    mut apple_ev: EventWriter<AppleEv>,
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
     apples: Res<Apples>,
     walls: Res<Walls>,
     b: Res<Board>,
     settings: Res<Settings>,
-    mut damage_ev: EventWriter<DamageSnakeEv>,
-    mut spawn_bullet_ev: EventWriter<SpawnBulletEv>,
-    mut apple_ev: EventWriter<AppleEv>,
 ) {
     timer
         .0

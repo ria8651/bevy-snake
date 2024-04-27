@@ -1,3 +1,5 @@
+use bevy::render::render_asset::RenderAssetUsages;
+
 use super::*;
 
 struct TmpMesh {
@@ -74,7 +76,7 @@ impl From<TmpMesh> for Mesh {
             uvs.push([0.0, 0.0]);
         }
 
-        let mut snake_mesh = Mesh::new(PrimitiveTopology::TriangleList);
+        let mut snake_mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
         snake_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
         snake_mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
         snake_mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);

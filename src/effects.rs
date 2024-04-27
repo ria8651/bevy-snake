@@ -4,11 +4,38 @@ pub struct EffectsPlugin;
 
 impl Plugin for EffectsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.add_systems(Startup, setup).add_systems(
             Update,
             explosion_system.run_if(in_state(GameState::Playing)),
         );
     }
+}
+
+#[derive(Resource)]
+struct EffectsResources {
+    boom_atlas_layout_handle: Handle<TextureAtlasLayout>,
+    boom_texture_handle: Handle<Image>,
+    boom_sound_handle: Handle<AudioSource>,
+}
+
+fn setup(
+    mut commands: Commands,
+    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
+    asset_server: Res<AssetServer>,
+) {
+    let texture_handle = asset_server.load("images/spritesheet.png");
+    let layout = TextureAtlasLayout::from_grid(Vec2::splat(512.0), 31, 1, None, None);
+    let boom_atlas_layout = texture_atlas_layouts.add(layout);
+
+    // song
+    // let music = asset_server.load("sounds/song.ogg");
+    // audio.play_looped(music);
+
+    commands.insert_resource(EffectsResources {
+        boom_atlas_layout_handle: boom_atlas_layout,
+        boom_texture_handle: texture_handle,
+        boom_sound_handle: asset_server.load("sounds/boom.ogg"),
+    });
 }
 
 #[derive(Event)]
@@ -18,22 +45,17 @@ pub struct ExplosionEv {
 
 fn explosion_system(
     mut commands: Commands,
-    settings: Res<Settings>,
-    b: Res<Board>,
     mut explosion_ev: EventReader<ExplosionEv>,
+    mut query: Query<(&mut AnimationTimer, &mut TextureAtlas, Entity)>,
+    texture_atlas_layouts: Res<Assets<TextureAtlasLayout>>,
+    effect_resources: Res<EffectsResources>,
+    b: Res<Board>,
     time: Res<Time>,
-    texture_atlases: Res<Assets<TextureAtlas>>,
-    mut query: Query<(
-        &mut AnimationTimer,
-        &mut TextureAtlasSprite,
-        &Handle<TextureAtlas>,
-        Entity,
-    )>,
 ) {
     for explosion in explosion_ev.read() {
         commands.spawn((
-            SpriteSheetBundle {
-                texture_atlas: settings.boom_texture_atlas_handle.as_ref().unwrap().clone(),
+            SpriteBundle {
+                texture: effect_resources.boom_texture_handle.clone(),
                 transform: Transform::from_xyz(
                     explosion.pos.x as f32 - b.width as f32 / 2.0 + 0.5,
                     explosion.pos.y as f32 - b.height as f32 / 2.0 + 0.5,
@@ -42,21 +64,25 @@ fn explosion_system(
                 .with_scale(Vec3::new(0.01, 0.01, 1.0)),
                 ..default()
             },
+            TextureAtlas {
+                layout: effect_resources.boom_atlas_layout_handle.clone(),
+                index: 0,
+            },
             AnimationTimer(Timer::from_seconds(0.04, TimerMode::Repeating)),
         ));
 
         commands.spawn(AudioBundle {
-            source: settings.boom_sound_handle.as_ref().unwrap().clone(),
+            source: effect_resources.boom_sound_handle.clone(),
             ..default()
         });
     }
 
-    for (mut timer, mut sprite, texture_atlas_handle, entity) in query.iter_mut() {
+    for (mut timer, mut texture_atlas, entity) in query.iter_mut() {
         timer.tick(time.delta());
         if timer.just_finished() {
-            let texture_atlas = texture_atlases.get(texture_atlas_handle).unwrap();
-            sprite.index = sprite.index + 1;
-            if sprite.index >= texture_atlas.textures.len() {
+            texture_atlas.index += 1;
+            let texture_atlas_layout = texture_atlas_layouts.get(&texture_atlas.layout).unwrap();
+            if texture_atlas.index >= texture_atlas_layout.textures.len() {
                 commands.entity(entity).despawn();
             }
         }

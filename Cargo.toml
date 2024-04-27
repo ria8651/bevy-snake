@@ -9,6 +9,6 @@ description = "SNAKE WITH GUNS!"
 # wasm-bindgen --out-dir ./out/ --target web ./target/wasm32-unknown-unknown/release/bevy-snake.wasm
 
 [dependencies]
-bevy = "0.12"
+bevy = "0.13"
 rand = "0.8.5"
-bevy-inspector-egui = "0.21"
+bevy-inspector-egui = "0.24"

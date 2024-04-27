@@ -53,8 +53,6 @@ pub struct Settings {
     pub board_size: BoardSize,
     pub walls: bool,
     pub walls_debug: bool,
-    pub boom_texture_atlas_handle: Option<Handle<TextureAtlas>>,
-    pub boom_sound_handle: Option<Handle<AudioSource>>,
 }
 
 #[derive(Resource)]
@@ -92,7 +90,6 @@ fn main() {
             DefaultPlugins.set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "Snake, WITH GUNS!".to_string(),
-                    fit_canvas_to_parent: true,
                     ..default()
                 }),
                 ..default()
@@ -120,8 +117,6 @@ fn main() {
             board_size: BoardSize::Medium,
             walls: false,
             walls_debug: false,
-            boom_texture_atlas_handle: None,
-            boom_sound_handle: None,
         })
         .insert_resource(MovmentTimer(movment_timer.clone()))
         .insert_resource(BulletTimer(movment_timer))
@@ -141,7 +136,7 @@ fn main() {
                 Color::rgb(0.7, 0.7, 0.7),
             ],
         })
-        .add_state::<GameState>()
+        .init_state::<GameState>()
         .add_event::<ExplosionEv>()
         .add_event::<DamageSnakeEv>()
         .add_event::<SpawnBulletEv>()
@@ -157,7 +152,7 @@ fn main() {
 fn game_state(
     game_state: Res<State<GameState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
-    keys: Res<Input<KeyCode>>,
+    keys: Res<ButtonInput<KeyCode>>,
     snake_query: Query<&Snake>,
     settings: Res<Settings>,
 ) {
@@ -179,11 +174,9 @@ fn game_state(
 
 fn scene_setup(
     mut commands: Commands,
-    b: Res<Board>,
     mut apples: ResMut<Apples>,
     asset_server: Res<AssetServer>,
-    mut texture_atlases: ResMut<Assets<TextureAtlas>>,
-    mut settings: ResMut<Settings>,
+    b: Res<Board>,
 ) {
     apples.sprite = Some(asset_server.load("images/apple.png"));
 
@@ -198,27 +191,15 @@ fn scene_setup(
         },
         MainCamera,
     ));
-
-    let texture_handle = asset_server.load("images/spritesheet.png");
-    let texture_atlas =
-        TextureAtlas::from_grid(texture_handle, Vec2::new(512.0, 512.0), 31, 1, None, None);
-    let texture_atlas_handle = texture_atlases.add(texture_atlas);
-    settings.boom_texture_atlas_handle = Some(texture_atlas_handle);
-
-    settings.boom_sound_handle = Some(asset_server.load("sounds/boom.ogg"));
-
-    // song
-    // let music = asset_server.load("sounds/song.ogg");
-    // audio.play_looped(music);
 }
 
 fn settings_system(
     mut settings: ResMut<Settings>,
-    keys: Res<Input<KeyCode>>,
+    keys: Res<ButtonInput<KeyCode>>,
     mut game_time: ResMut<GameTime>,
     time: Res<Time>,
 ) {
-    if keys.just_pressed(KeyCode::I) {
+    if keys.just_pressed(KeyCode::KeyI) {
         settings.interpolation = !settings.interpolation;
     }
 
@@ -314,32 +295,32 @@ fn reset_game(
     // spawn in new snakes
     let snake_controls = vec![
         InputMap {
-            up: KeyCode::W,
-            down: KeyCode::S,
-            left: KeyCode::A,
-            right: KeyCode::D,
+            up: KeyCode::KeyW,
+            down: KeyCode::KeyS,
+            left: KeyCode::KeyA,
+            right: KeyCode::KeyD,
             shoot: KeyCode::ShiftLeft,
         },
         InputMap {
-            up: KeyCode::Up,
-            down: KeyCode::Down,
-            left: KeyCode::Left,
-            right: KeyCode::Right,
+            up: KeyCode::ArrowUp,
+            down: KeyCode::ArrowDown,
+            left: KeyCode::ArrowLeft,
+            right: KeyCode::ArrowRight,
             shoot: KeyCode::AltRight,
         },
         InputMap {
-            up: KeyCode::P,
+            up: KeyCode::KeyP,
             down: KeyCode::Semicolon,
-            left: KeyCode::L,
-            right: KeyCode::Apostrophe,
+            left: KeyCode::KeyL,
+            right: KeyCode::Quote,
             shoot: KeyCode::Backslash,
         },
         InputMap {
-            up: KeyCode::Y,
-            down: KeyCode::H,
-            left: KeyCode::G,
-            right: KeyCode::J,
-            shoot: KeyCode::B,
+            up: KeyCode::KeyY,
+            down: KeyCode::KeyH,
+            left: KeyCode::KeyG,
+            right: KeyCode::KeyJ,
+            shoot: KeyCode::KeyB,
         },
     ];
     let positions = vec![
