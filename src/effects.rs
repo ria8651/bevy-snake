@@ -23,8 +23,8 @@ fn setup(
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
     asset_server: Res<AssetServer>,
 ) {
-    let texture_handle = asset_server.load("images/spritesheet.png");
-    let layout = TextureAtlasLayout::from_grid(Vec2::splat(512.0), 31, 1, None, None);
+    let texture_handle = asset_server.load("images/spritesheet_small.png");
+    let layout = TextureAtlasLayout::from_grid(Vec2::splat(256.0), 8, 4, None, None);
     let boom_atlas_layout = texture_atlas_layouts.add(layout);
 
     // song
@@ -61,7 +61,7 @@ fn explosion_system(
                     explosion.pos.y as f32 - b.height as f32 / 2.0 + 0.5,
                     12.0,
                 )
-                .with_scale(Vec3::new(0.01, 0.01, 1.0)),
+                .with_scale(Vec3::new(0.02, 0.02, 1.0)),
                 ..default()
             },
             TextureAtlas {

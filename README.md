@@ -20,9 +20,9 @@ Install wasm-bindgen and run:
 
 ```bash
 cargo build --release --target wasm32-unknown-unknown
-wasm-bindgen --out-name bevy-snake \
+wasm-bindgen --no-typescript --out-name bevy-snake \
   --out-dir web \
-  --target web target/wasm32-unknown-unknown/release/hierarchical-wfc.wasm
+  --target web target/wasm32-unknown-unknown/release/bevy-snake.wasm
 ```
 
 You'll then need to add a `html` file to load the generated `wasm` and `js`. Something like [this](https://github.com/bevyengine/bevy/blob/main/examples/wasm/index.html).

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8" />
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #191919;
+            color: white;
+        }
+
+        canvas {
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+    <script type="module">
+        import './restart-audio-context.js'
+        import init from './bevy-snake.js'
+        init();
+    </script>
+</head>
+
+<body>
+    <script>
+        setInterval(function () {
+            document.getElementById('bevy').style = ''
+        }, 1000);
+    </script>
+    <h1 style="position: absolute; z-index: -1">Loading...</h1>
+    <canvas id="bevy" style="width: 100%; height: 100%;"></canvas>
+</body>
+
+</html>

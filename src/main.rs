@@ -90,6 +90,8 @@ fn main() {
             DefaultPlugins.set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "Snake, WITH GUNS!".to_string(),
+                    canvas: Some("#bevy".to_string()),
+                    prevent_default_event_handling: false,
                     ..default()
                 }),
                 ..default()
@@ -172,20 +174,11 @@ fn game_state(
     }
 }
 
-fn scene_setup(
-    mut commands: Commands,
-    mut apples: ResMut<Apples>,
-    asset_server: Res<AssetServer>,
-    b: Res<Board>,
-) {
+fn scene_setup(mut commands: Commands, mut apples: ResMut<Apples>, asset_server: Res<AssetServer>) {
     apples.sprite = Some(asset_server.load("images/apple.png"));
 
     commands.spawn((
         Camera2dBundle {
-            projection: OrthographicProjection {
-                scaling_mode: ScalingMode::FixedVertical(b.height as f32),
-                ..default()
-            },
             transform: Transform::from_xyz(0.0, 0.0, 500.0),
             ..default()
         },
@@ -244,7 +237,10 @@ fn reset_game(
     }
 
     let mut camera_projection = camera_query.single_mut();
-    camera_projection.scaling_mode = ScalingMode::FixedVertical(b.height as f32);
+    camera_projection.scaling_mode = ScalingMode::AutoMin {
+        min_height: b.height as f32,
+        min_width: b.width as f32,
+    };
 
     for x in 0..b.width {
         for y in 0..b.height {
