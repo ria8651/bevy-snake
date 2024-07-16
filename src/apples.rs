@@ -7,7 +7,7 @@ impl Plugin for ApplePlugin {
         app.add_systems(
             Update,
             apple_system
-                .run_if(in_state(GameState::Playing))
+                .run_if(in_state(GameState::InGame))
                 .after(snake::damage_snake_system)
                 .after(snake::snake_system)
                 .after(reset_game),

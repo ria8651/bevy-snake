@@ -7,7 +7,7 @@ impl Plugin for WallPlugin {
         app.add_systems(
             Update,
             wall_system
-                .run_if(in_state(GameState::Playing))
+                .run_if(in_state(GameState::InGame))
                 .after(snake::damage_snake_system)
                 .after(snake::snake_system)
                 .after(reset_game),
@@ -136,7 +136,7 @@ fn wall_system(
                     commands
                         .spawn(SpriteBundle {
                             sprite: Sprite {
-                                color: Color::rgb(0.1, 0.1, 0.1),
+                                color: Color::srgb(0.1, 0.1, 0.1),
                                 ..default()
                             },
                             transform: Transform::from_xyz(
@@ -169,7 +169,7 @@ fn wall_system(
                     commands.spawn((
                         SpriteBundle {
                             sprite: Sprite {
-                                color: Color::rgba(1.0, 0.1, 0.1, 0.2),
+                                color: Color::srgba(1.0, 0.1, 0.1, 0.2),
                                 ..default()
                             },
                             transform: Transform::from_xyz(

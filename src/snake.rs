@@ -11,7 +11,7 @@ impl Plugin for SnakePlugin {
                     .after(snake_system)
                     .after(guns::bullet_system)
                     .before(game_state),
-                snake_system.run_if(in_state(GameState::Playing)),
+                snake_system.run_if(in_state(GameState::InGame)),
             ),
         );
     }

@@ -20,12 +20,12 @@ mod snake;
 mod ui;
 mod walls;
 
-#[derive(PartialEq, Eq, Hash, Default, Copy, Clone, Debug, States)]
+#[derive(States, Default, Debug, Hash, PartialEq, Eq, Clone)]
 pub enum GameState {
     #[default]
-    Menu,
-    Playing,
-    Paused,
+    Setup,
+    Start,
+    InGame,
     GameOver,
 }
 
@@ -103,12 +103,12 @@ fn main() {
             guns::GunPlugin,
             apples::ApplePlugin,
         ))
-        .insert_resource(ClearColor(Color::rgb(0.1, 0.1, 0.1)))
+        .insert_resource(ClearColor(Color::srgb(0.1, 0.1, 0.1)))
         .insert_resource(Board {
             width: 10,
             height: 9,
-            colour1: Color::rgb(0.3, 0.5, 0.3),
-            colour2: Color::rgb(0.25, 0.45, 0.25),
+            colour1: Color::srgb(0.3, 0.5, 0.3),
+            colour2: Color::srgb(0.25, 0.45, 0.25),
         })
         .insert_resource(Settings {
             interpolation: true,
@@ -132,10 +132,10 @@ fn main() {
         })
         .insert_resource(Colours {
             colours: vec![
-                Color::rgb(0.0, 0.7, 0.25),
-                Color::rgb(0.3, 0.4, 0.7),
-                Color::rgb(0.7, 0.4, 0.3),
-                Color::rgb(0.7, 0.7, 0.7),
+                Color::srgb(0.0, 0.7, 0.25),
+                Color::srgb(0.3, 0.4, 0.7),
+                Color::srgb(0.7, 0.4, 0.3),
+                Color::srgb(0.7, 0.7, 0.7),
             ],
         })
         .init_state::<GameState>()
@@ -146,8 +146,8 @@ fn main() {
         .add_event::<WallEv>()
         .add_systems(Startup, scene_setup)
         .add_systems(Update, game_state)
-        .add_systems(OnEnter(GameState::Playing), reset_game)
-        .add_systems(Update, settings_system.run_if(in_state(GameState::Playing)))
+        .add_systems(OnEnter(GameState::Start), reset_game)
+        .add_systems(Update, settings_system.run_if(in_state(GameState::InGame)))
         .run();
 }
 
@@ -159,18 +159,18 @@ fn game_state(
     settings: Res<Settings>,
 ) {
     match game_state.get() {
-        GameState::Menu => next_game_state.set(GameState::Playing),
-        GameState::Playing => {
+        GameState::Setup => next_game_state.set(GameState::Start),
+        GameState::Start => next_game_state.set(GameState::InGame),
+        GameState::InGame => {
             if snake_query.iter().count() <= (settings.snake_count != 1) as usize {
                 next_game_state.set(GameState::GameOver);
             }
         }
         GameState::GameOver => {
             if keys.just_pressed(KeyCode::Space) {
-                next_game_state.set(GameState::Playing);
+                next_game_state.set(GameState::Start);
             }
         }
-        _ => {}
     }
 }
 

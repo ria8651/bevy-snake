@@ -6,7 +6,7 @@ impl Plugin for EffectsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, setup).add_systems(
             Update,
-            explosion_system.run_if(in_state(GameState::Playing)),
+            explosion_system.run_if(in_state(GameState::InGame)),
         );
     }
 }
@@ -24,7 +24,7 @@ fn setup(
     asset_server: Res<AssetServer>,
 ) {
     let texture_handle = asset_server.load("images/spritesheet_small.png");
-    let layout = TextureAtlasLayout::from_grid(Vec2::splat(256.0), 8, 4, None, None);
+    let layout = TextureAtlasLayout::from_grid(UVec2::splat(256), 8, 4, None, None);
     let boom_atlas_layout = texture_atlas_layouts.add(layout);
 
     // song

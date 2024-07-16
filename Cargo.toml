@@ -5,8 +5,9 @@ edition = "2021"
 description = "SNAKE WITH GUNS!"
 
 [dependencies]
-bevy = { version = "0.13", default-features = false, features = [
+bevy = { version = "0.14", default-features = false, features = [
     "bevy_asset",
+    "bevy_state",
     "bevy_audio",
     "bevy_gilrs",
     "bevy_scene",
@@ -16,7 +17,6 @@ bevy = { version = "0.13", default-features = false, features = [
     "bevy_sprite",
     "bevy_text",
     "bevy_ui",
-    "multi-threaded",
     "png",
     "vorbis",
     "x11",
@@ -25,4 +25,4 @@ bevy = { version = "0.13", default-features = false, features = [
     "bevy_debug_stepping",
 ] }
 rand = "0.8.5"
-bevy-inspector-egui = "0.24"
+bevy-inspector-egui = "0.25"

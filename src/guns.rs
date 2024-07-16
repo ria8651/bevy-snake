@@ -8,7 +8,7 @@ impl Plugin for GunPlugin {
             Update,
             (
                 bullet_spawner.after(snake::snake_system),
-                bullet_system.run_if(in_state(GameState::Playing)),
+                bullet_system.run_if(in_state(GameState::InGame)),
             ),
         );
     }
@@ -48,7 +48,7 @@ pub fn bullet_spawner(
         commands.spawn((
             MaterialMesh2dBundle {
                 mesh: meshes.add(Rectangle::new(0.2, 0.2)).into(),
-                material: materials.add(ColorMaterial::from(Color::rgb(1.0, 1.0, 0.26))),
+                material: materials.add(ColorMaterial::from(Color::srgb(1.0, 1.0, 0.26))),
                 transform: Transform::from_xyz(
                     -b.width as f32 / 2.0 + bullet.pos.x as f32 + 0.5,
                     -b.height as f32 / 2.0 + bullet.pos.y as f32 + 0.5,
