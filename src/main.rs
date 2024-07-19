@@ -1,24 +1,21 @@
-use apples::{AppleEv, Apples};
 use bevy::{
     prelude::*,
     render::{camera::ScalingMode, mesh::PrimitiveTopology},
     sprite::{MaterialMesh2dBundle, Mesh2dHandle},
 };
+use board::{Board, Direction};
 use effects::ExplosionEv;
-use guns::{Bullet, SpawnBulletEv};
+// use guns::{Bullet, SpawnBulletEv};
 use meshing::*;
 use rand::Rng;
-use snake::{DamageSnakeEv, InputMap, Snake};
 use std::collections::{HashMap, VecDeque};
-use walls::{WallEv, Walls};
 
-mod apples;
+mod board;
 mod effects;
-mod guns;
+mod game;
 mod meshing;
-mod snake;
+mod render;
 mod ui;
-mod walls;
 
 #[derive(States, Default, Debug, Hash, PartialEq, Eq, Clone)]
 pub enum GameState {
@@ -56,16 +53,6 @@ pub struct Settings {
 }
 
 #[derive(Resource)]
-pub struct Board {
-    width: i32,
-    height: i32,
-    colour1: Color,
-    colour2: Color,
-}
-
-#[derive(Resource)]
-pub struct MovmentTimer(Timer);
-#[derive(Resource)]
 pub struct BulletTimer(Timer);
 #[derive(Resource, Default)]
 pub struct GameTime(f32);
@@ -79,12 +66,8 @@ struct Colours {
 
 #[derive(Component)]
 struct BoardTile;
-#[derive(Component)]
-struct MainCamera;
 
 fn main() {
-    let movment_timer = Timer::from_seconds(1.0 / 4.0, TimerMode::Repeating);
-
     App::new()
         .add_plugins((
             DefaultPlugins.set(WindowPlugin {
@@ -96,40 +79,23 @@ fn main() {
                 }),
                 ..default()
             }),
-            effects::EffectsPlugin,
+            // effects::EffectsPlugin,
             ui::UiPlugin,
-            snake::SnakePlugin,
-            walls::WallPlugin,
-            guns::GunPlugin,
-            apples::ApplePlugin,
+            game::GamePlugin,
+            render::BoardRenderPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.1, 0.1, 0.1)))
-        .insert_resource(Board {
-            width: 10,
-            height: 9,
-            colour1: Color::srgb(0.3, 0.5, 0.3),
-            colour2: Color::srgb(0.25, 0.45, 0.25),
-        })
         .insert_resource(Settings {
             interpolation: true,
             tps: 7.5,
             tps_ramp: false,
             snake_count: 1,
             apple_count: 3,
-            board_size: BoardSize::Medium,
+            board_size: BoardSize::Small,
             walls: false,
             walls_debug: false,
         })
-        .insert_resource(MovmentTimer(movment_timer.clone()))
-        .insert_resource(BulletTimer(movment_timer))
         .insert_resource(GameTime::default())
-        .insert_resource(Apples {
-            list: HashMap::new(),
-            sprite: None,
-        })
-        .insert_resource(Walls {
-            list: HashMap::new(),
-        })
         .insert_resource(Colours {
             colours: vec![
                 Color::srgb(0.0, 0.7, 0.25),
@@ -140,31 +106,25 @@ fn main() {
         })
         .init_state::<GameState>()
         .add_event::<ExplosionEv>()
-        .add_event::<DamageSnakeEv>()
-        .add_event::<SpawnBulletEv>()
-        .add_event::<AppleEv>()
-        .add_event::<WallEv>()
-        .add_systems(Startup, scene_setup)
         .add_systems(Update, game_state)
-        .add_systems(OnEnter(GameState::Start), reset_game)
+        // .add_systems(OnEnter(GameState::Start), reset_game)
         .add_systems(Update, settings_system.run_if(in_state(GameState::InGame)))
         .run();
 }
 
 fn game_state(
-    game_state: Res<State<GameState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
+    game_state: Res<State<GameState>>,
     keys: Res<ButtonInput<KeyCode>>,
-    snake_query: Query<&Snake>,
-    settings: Res<Settings>,
+    // settings: Res<Settings>,
 ) {
     match game_state.get() {
         GameState::Setup => next_game_state.set(GameState::Start),
         GameState::Start => next_game_state.set(GameState::InGame),
         GameState::InGame => {
-            if snake_query.iter().count() <= (settings.snake_count != 1) as usize {
-                next_game_state.set(GameState::GameOver);
-            }
+            // if snake_query.iter().count() <= (settings.snake_count != 1) as usize {
+            //     next_game_state.set(GameState::GameOver);
+            // }
         }
         GameState::GameOver => {
             if keys.just_pressed(KeyCode::Space) {
@@ -172,18 +132,6 @@ fn game_state(
             }
         }
     }
-}
-
-fn scene_setup(mut commands: Commands, mut apples: ResMut<Apples>, asset_server: Res<AssetServer>) {
-    apples.sprite = Some(asset_server.load("images/apple.png"));
-
-    commands.spawn((
-        Camera2dBundle {
-            transform: Transform::from_xyz(0.0, 0.0, 500.0),
-            ..default()
-        },
-        MainCamera,
-    ));
 }
 
 fn settings_system(
@@ -202,179 +150,156 @@ fn settings_system(
     }
 }
 
-fn reset_game(
-    snake_query: Query<Entity, With<Snake>>,
-    bullet_query: Query<Entity, With<Bullet>>,
-    board_query: Query<Entity, With<BoardTile>>,
-    mut camera_query: Query<&mut OrthographicProjection, With<MainCamera>>,
-    mut commands: Commands,
-    mut apples: ResMut<Apples>,
-    mut walls: ResMut<Walls>,
-    mut game_time: ResMut<GameTime>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    mut b: ResMut<Board>,
-    mut apple_ev: EventWriter<AppleEv>,
-    colours: Res<Colours>,
-    settings: Res<Settings>,
-) {
-    for tile in board_query.iter() {
-        commands.entity(tile).despawn();
-    }
+// fn reset_game(
+//     snake_query: Query<Entity, With<Snake>>,
+//     // bullet_query: Query<Entity, With<Bullet>>,
+//     board_query: Query<Entity, With<BoardTile>>,
+//     mut camera_query: Query<&mut OrthographicProjection, With<MainCamera>>,
+//     mut commands: Commands,
+//     mut apples: ResMut<Apples>,
+//     mut walls: ResMut<Walls>,
+//     mut game_time: ResMut<GameTime>,
+//     mut materials: ResMut<Assets<ColorMaterial>>,
+//     mut b: ResMut<Board>,
+//     mut apple_ev: EventWriter<AppleEv>,
+//     colours: Res<Colours>,
+//     settings: Res<Settings>,
+// ) {
+//     for tile in board_query.iter() {
+//         commands.entity(tile).despawn();
+//     }
 
-    match settings.board_size {
-        BoardSize::Small => {
-            b.width = 10;
-            b.height = 9;
-        }
-        BoardSize::Medium => {
-            b.width = 17;
-            b.height = 15;
-        }
-        BoardSize::Large => {
-            b.width = 24;
-            b.height = 21;
-        }
-    }
+//     *b = match settings.board_size {
+//         BoardSize::Small => Board::small(1),
+//         BoardSize::Medium => unimplemented!("Medium board size"),
+//         BoardSize::Large => unimplemented!("Large board size"),
+//     };
 
-    let mut camera_projection = camera_query.single_mut();
-    camera_projection.scaling_mode = ScalingMode::AutoMin {
-        min_height: b.height as f32,
-        min_width: b.width as f32,
-    };
+//     let mut camera_projection = camera_query.single_mut();
+//     camera_projection.scaling_mode = ScalingMode::AutoMin {
+//         min_height: b.height() as f32,
+//         min_width: b.width() as f32,
+//     };
 
-    for x in 0..b.width {
-        for y in 0..b.height {
-            let color = if (x + y) % 2 == 0 {
-                b.colour1
-            } else {
-                b.colour2
-            };
+//     for x in 0..b.width() {
+//         for y in 0..b.height() {
+//             let color = if (x + y) % 2 == 0 {
+//                 Color::srgb(0.3, 0.5, 0.3)
+//             } else {
+//                 Color::srgb(0.25, 0.45, 0.25)
+//             };
 
-            commands.spawn((
-                SpriteBundle {
-                    sprite: Sprite { color, ..default() },
-                    transform: Transform::from_xyz(
-                        x as f32 - b.width as f32 / 2.0 + 0.5,
-                        y as f32 - b.height as f32 / 2.0 + 0.5,
-                        -1.0,
-                    ),
-                    ..default()
-                },
-                BoardTile,
-            ));
-        }
-    }
+//             commands.spawn((
+//                 SpriteBundle {
+//                     sprite: Sprite { color, ..default() },
+//                     transform: Transform::from_xyz(
+//                         x as f32 - b.width() as f32 / 2.0 + 0.5,
+//                         y as f32 - b.height() as f32 / 2.0 + 0.5,
+//                         -1.0,
+//                     ),
+//                     ..default()
+//                 },
+//                 BoardTile,
+//             ));
+//         }
+//     }
 
-    for snake_entity in snake_query.iter() {
-        commands.entity(snake_entity).despawn();
-    }
-    for bullet_entity in bullet_query.iter() {
-        commands.entity(bullet_entity).despawn();
-    }
+//     for snake_entity in snake_query.iter() {
+//         commands.entity(snake_entity).despawn();
+//     }
+//     // for bullet_entity in bullet_query.iter() {
+//     //     commands.entity(bullet_entity).despawn();
+//     // }
 
-    for apple in apples.list.iter().clone() {
-        commands.entity(*apple.1).despawn();
-    }
-    apples.list = HashMap::new();
+//     for apple in apples.list.iter().clone() {
+//         commands.entity(*apple.1).despawn();
+//     }
+//     apples.list = HashMap::new();
 
-    for apple in walls.list.iter().clone() {
-        commands.entity(*apple.1).despawn();
-    }
-    walls.list = HashMap::new();
+//     for apple in walls.list.iter().clone() {
+//         commands.entity(*apple.1).despawn();
+//     }
+//     walls.list = HashMap::new();
 
-    for _ in 0..settings.apple_count {
-        apple_ev.send(AppleEv::SpawnRandom);
-    }
+//     for _ in 0..settings.apple_count {
+//         apple_ev.send(AppleEv::SpawnRandom);
+//     }
 
-    game_time.0 = 0.0;
+//     game_time.0 = 0.0;
 
-    // spawn in new snakes
-    let snake_controls = vec![
-        InputMap {
-            up: KeyCode::KeyW,
-            down: KeyCode::KeyS,
-            left: KeyCode::KeyA,
-            right: KeyCode::KeyD,
-            shoot: KeyCode::ShiftLeft,
-        },
-        InputMap {
-            up: KeyCode::ArrowUp,
-            down: KeyCode::ArrowDown,
-            left: KeyCode::ArrowLeft,
-            right: KeyCode::ArrowRight,
-            shoot: KeyCode::AltRight,
-        },
-        InputMap {
-            up: KeyCode::KeyP,
-            down: KeyCode::Semicolon,
-            left: KeyCode::KeyL,
-            right: KeyCode::Quote,
-            shoot: KeyCode::Backslash,
-        },
-        InputMap {
-            up: KeyCode::KeyY,
-            down: KeyCode::KeyH,
-            left: KeyCode::KeyG,
-            right: KeyCode::KeyJ,
-            shoot: KeyCode::KeyB,
-        },
-    ];
-    let positions = vec![
-        vec![
-            IVec2::new(4, b.height - 2),
-            IVec2::new(3, b.height - 2),
-            IVec2::new(2, b.height - 2),
-            IVec2::new(1, b.height - 2),
-        ],
-        vec![
-            IVec2::new(b.width - 5, 1),
-            IVec2::new(b.width - 4, 1),
-            IVec2::new(b.width - 3, 1),
-            IVec2::new(b.width - 2, 1),
-        ],
-        vec![
-            IVec2::new(b.width - 2, b.height - 5),
-            IVec2::new(b.width - 2, b.height - 4),
-            IVec2::new(b.width - 2, b.height - 3),
-            IVec2::new(b.width - 2, b.height - 2),
-        ],
-        vec![
-            IVec2::new(1, 4),
-            IVec2::new(1, 3),
-            IVec2::new(1, 2),
-            IVec2::new(1, 1),
-        ],
-    ];
+//     // spawn in new snakes
+//     let snake_controls = vec![
+//         InputMap {
+//             up: KeyCode::KeyW,
+//             down: KeyCode::KeyS,
+//             left: KeyCode::KeyA,
+//             right: KeyCode::KeyD,
+//             shoot: KeyCode::ShiftLeft,
+//         },
+//         InputMap {
+//             up: KeyCode::ArrowUp,
+//             down: KeyCode::ArrowDown,
+//             left: KeyCode::ArrowLeft,
+//             right: KeyCode::ArrowRight,
+//             shoot: KeyCode::AltRight,
+//         },
+//         InputMap {
+//             up: KeyCode::KeyP,
+//             down: KeyCode::Semicolon,
+//             left: KeyCode::KeyL,
+//             right: KeyCode::Quote,
+//             shoot: KeyCode::Backslash,
+//         },
+//         InputMap {
+//             up: KeyCode::KeyY,
+//             down: KeyCode::KeyH,
+//             left: KeyCode::KeyG,
+//             right: KeyCode::KeyJ,
+//             shoot: KeyCode::KeyB,
+//         },
+//     ];
+//     let positions = vec![
+//         vec![
+//             IVec2::new(4, b.height() as i32 - 2),
+//             IVec2::new(3, b.height() as i32 - 2),
+//             IVec2::new(2, b.height() as i32 - 2),
+//             IVec2::new(1, b.height() as i32 - 2),
+//         ],
+//         vec![
+//             IVec2::new(b.width() as i32 - 5, 1),
+//             IVec2::new(b.width() as i32 - 4, 1),
+//             IVec2::new(b.width() as i32 - 3, 1),
+//             IVec2::new(b.width() as i32 - 2, 1),
+//         ],
+//         vec![
+//             IVec2::new(b.width() as i32 - 2, b.height() as i32 - 5),
+//             IVec2::new(b.width() as i32 - 2, b.height() as i32 - 4),
+//             IVec2::new(b.width() as i32 - 2, b.height() as i32 - 3),
+//             IVec2::new(b.width() as i32 - 2, b.height() as i32 - 2),
+//         ],
+//         vec![
+//             IVec2::new(1, 4),
+//             IVec2::new(1, 3),
+//             IVec2::new(1, 2),
+//             IVec2::new(1, 1),
+//         ],
+//     ];
 
-    let transform = Transform::from_xyz(-b.width as f32 / 2.0, -b.height as f32 / 2.0, 0.0);
+//     let transform = Transform::from_xyz(-(b.width() as f32) / 2.0, -(b.height() as f32) / 2.0, 0.0);
 
-    for i in 0..settings.snake_count as usize {
-        commands.spawn((
-            MaterialMesh2dBundle {
-                material: materials.add(ColorMaterial::from(colours.colours[i])),
-                transform,
-                ..default()
-            },
-            Snake {
-                id: i as u32,
-                body: positions[i].clone(),
-                input_map: snake_controls[i],
-                ..Default::default()
-            },
-        ));
-    }
-}
-
-fn in_bounds(pos: IVec2, b: &Board) -> bool {
-    pos.x >= 0 && pos.x < b.width && pos.y >= 0 && pos.y < b.height
-}
-
-fn calculate_flip(dir: IVec2) -> IVec2 {
-    match dir.to_array() {
-        [0, 1] => IVec2::new(1, 0),
-        [0, -1] => IVec2::new(-1, 0),
-        [1, 0] => IVec2::new(1, 1),
-        [-1, 0] => IVec2::new(-1, 1),
-        _ => IVec2::new(1, 1),
-    }
-}
+//     for i in 0..settings.snake_count as usize {
+//         commands.spawn((
+//             MaterialMesh2dBundle {
+//                 material: materials.add(ColorMaterial::from(colours.colours[i])),
+//                 transform,
+//                 ..default()
+//             },
+//             Snake {
+//                 id: i as u32,
+//                 body: positions[i].clone(),
+//                 input_map: snake_controls[i],
+//                 ..Default::default()
+//             },
+//         ));
+//     }
+// }

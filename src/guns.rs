@@ -50,8 +50,8 @@ pub fn bullet_spawner(
                 mesh: meshes.add(Rectangle::new(0.2, 0.2)).into(),
                 material: materials.add(ColorMaterial::from(Color::srgb(1.0, 1.0, 0.26))),
                 transform: Transform::from_xyz(
-                    -b.width as f32 / 2.0 + bullet.pos.x as f32 + 0.5,
-                    -b.height as f32 / 2.0 + bullet.pos.y as f32 + 0.5,
+                    -(b.width() as f32) / 2.0 + bullet.pos.x as f32 + 0.5,
+                    -(b.height() as f32) / 2.0 + bullet.pos.y as f32 + 0.5,
                     11.0,
                 ),
                 ..default()

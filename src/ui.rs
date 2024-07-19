@@ -3,6 +3,7 @@ use bevy_inspector_egui::{
     bevy_egui::{EguiContexts, EguiPlugin},
     egui,
 };
+use game::Points;
 
 pub struct UiPlugin;
 
@@ -63,11 +64,9 @@ fn ui_setup(mut commands: Commands, asset_server: Res<AssetServer>, colours: Res
 
 fn ui_system(
     mut point_query: Query<(&PointId, &mut Text, &mut Style)>,
-    points: Res<snake::Points>,
     mut contexts: EguiContexts,
     mut settings: ResMut<Settings>,
-    mut wall_ev: EventWriter<WallEv>,
-    snake_query: Query<&Snake>,
+    points: Res<Points>,
 ) {
     egui::Window::new("Settings").show(contexts.ctx_mut(), |ui| {
         ui.label(format!("tps: {:.1}", settings.tps));
@@ -101,10 +100,6 @@ fn ui_system(
         ui.checkbox(&mut settings.walls, "Walls");
         ui.checkbox(&mut settings.walls_debug, "Walls debug");
 
-        if ui.button("Spawn wall").clicked() {
-            wall_ev.send(WallEv::Spawn);
-        }
-
         ui.label("Controls");
         ui.label("Snake 1: WASD to move, LShift to shoot");
         ui.label("Snake 2: Arrows to move, RAlt to shoot");
@@ -113,27 +108,27 @@ fn ui_system(
         ui.label("Space to restart");
     });
 
-    for (point_id, mut text, mut style) in point_query.iter_mut() {
-        let id = point_id.0;
-        if settings.snake_count == 1 {
-            if id == 0 {
-                style.display = Display::Flex;
-                for snake in snake_query.iter() {
-                    if snake.id == 0 {
-                        text.sections[0].value = snake.body.len().to_string();
-                    }
-                }
-            } else {
-                style.display = Display::None;
-            }
-        } else {
-            if points.points[id as usize] == 0 {
-                style.display = Display::None;
-            } else {
-                style.display = Display::Flex;
-            }
+    // for (point_id, mut text, mut style) in point_query.iter_mut() {
+    //     let id = point_id.0;
+    //     if settings.snake_count == 1 {
+    //         if id == 0 {
+    //             style.display = Display::Flex;
+    //             for snake in snake_query.iter() {
+    //                 if snake.id == 0 {
+    //                     text.sections[0].value = snake.body.len().to_string();
+    //                 }
+    //             }
+    //         } else {
+    //             style.display = Display::None;
+    //         }
+    //     } else {
+    //         if points[id as usize] == 0 {
+    //             style.display = Display::None;
+    //         } else {
+    //             style.display = Display::Flex;
+    //         }
 
-            text.sections[0].value = points.points[id as usize].to_string();
-        }
-    }
+    //         text.sections[0].value = points[id as usize].to_string();
+    //     }
+    // }
 }

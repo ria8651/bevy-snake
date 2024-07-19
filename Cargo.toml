@@ -24,5 +24,6 @@ bevy = { version = "0.14", default-features = false, features = [
     "webgl2",
     "bevy_debug_stepping",
 ] }
-rand = "0.8.5"
 bevy-inspector-egui = "0.25"
+rand = "0.8.5"
+thiserror = "1.0"

@@ -8,8 +8,8 @@ impl Plugin for WallPlugin {
             Update,
             wall_system
                 .run_if(in_state(GameState::InGame))
-                .after(snake::damage_snake_system)
-                .after(snake::snake_system)
+                .after(game::damage_snake_system)
+                .after(game::snake_system)
                 .after(reset_game),
         );
     }
@@ -41,23 +41,26 @@ fn wall_system(
 ) {
     let mut rng = rand::thread_rng();
 
+    let width = b.width() as i32;
+    let height = b.height() as i32;
+
     let unspawnable_positions = vec![
         IVec2::new(0, 1),
         IVec2::new(1, 0),
-        IVec2::new(b.width - 1, 1),
-        IVec2::new(b.width - 2, 0),
-        IVec2::new(0, b.height - 2),
-        IVec2::new(1, b.height - 1),
-        IVec2::new(b.width - 1, b.height - 2),
-        IVec2::new(b.width - 2, b.height - 1),
+        IVec2::new(width - 1, 1),
+        IVec2::new(width - 2, 0),
+        IVec2::new(0, height - 2),
+        IVec2::new(1, height - 1),
+        IVec2::new(width - 1, height - 2),
+        IVec2::new(width - 2, height - 1),
     ];
     let corner_cases = vec![
         (IVec2::new(0, 2), IVec2::new(2, 0)),
-        (IVec2::new(0, b.height - 3), IVec2::new(2, b.height - 1)),
-        (IVec2::new(b.width - 3, 0), IVec2::new(b.width - 1, 2)),
+        (IVec2::new(0, height - 3), IVec2::new(2, height - 1)),
+        (IVec2::new(width - 3, 0), IVec2::new(width - 1, 2)),
         (
-            IVec2::new(b.width - 3, b.height - 1),
-            IVec2::new(b.width - 1, b.height - 3),
+            IVec2::new(width - 3, height - 1),
+            IVec2::new(width - 1, height - 3),
         ),
     ];
     let is_valid = |pos, walls: &Walls| {
@@ -93,12 +96,12 @@ fn wall_system(
             }
 
             // stop walls spawning at the edge of the board from blocking the snake
-            if wall.x == 0 || wall.x == b.width - 1 {
+            if wall.x == 0 || wall.x == width - 1 {
                 if pos == *wall + IVec2::new(0, 2) || pos == *wall + IVec2::new(0, -2) {
                     return false;
                 }
             }
-            if wall.y == 0 || wall.y == b.height - 1 {
+            if wall.y == 0 || wall.y == height - 1 {
                 if pos == *wall + IVec2::new(2, 0) || pos == *wall + IVec2::new(-2, 0) {
                     return false;
                 }
@@ -119,7 +122,7 @@ fn wall_system(
                 let mut count = 0;
                 let mut pos;
                 'wall: loop {
-                    pos = IVec2::new(rng.gen_range(0..b.width), rng.gen_range(0..b.height));
+                    pos = IVec2::new(rng.gen_range(0..width), rng.gen_range(0..height));
 
                     count += 1;
                     if count > 1000 {
@@ -140,8 +143,8 @@ fn wall_system(
                                 ..default()
                             },
                             transform: Transform::from_xyz(
-                                pos.x as f32 - b.width as f32 / 2.0 + 0.5,
-                                pos.y as f32 - b.height as f32 / 2.0 + 0.5,
+                                pos.x as f32 - width as f32 / 2.0 + 0.5,
+                                pos.y as f32 - height as f32 / 2.0 + 0.5,
                                 5.0,
                             ),
                             ..default()
@@ -162,8 +165,8 @@ fn wall_system(
     }
 
     if settings.walls_debug {
-        for x in 0..b.width {
-            for y in 0..b.height {
+        for x in 0..width {
+            for y in 0..height {
                 let pos = IVec2::new(x, y);
                 if !is_valid(pos, &walls) {
                     commands.spawn((
@@ -173,8 +176,8 @@ fn wall_system(
                                 ..default()
                             },
                             transform: Transform::from_xyz(
-                                pos.x as f32 - b.width as f32 / 2.0 + 0.5,
-                                pos.y as f32 - b.height as f32 / 2.0 + 0.5,
+                                pos.x as f32 - width as f32 / 2.0 + 0.5,
+                                pos.y as f32 - height as f32 / 2.0 + 0.5,
                                 4.0,
                             ),
                             ..default()

@@ -4,10 +4,8 @@ pub struct EffectsPlugin;
 
 impl Plugin for EffectsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup).add_systems(
-            Update,
-            explosion_system.run_if(in_state(GameState::InGame)),
-        );
+        app.add_systems(Startup, setup)
+            .add_systems(Update, explosion_system.run_if(in_state(GameState::InGame)));
     }
 }
 
@@ -57,8 +55,8 @@ fn explosion_system(
             SpriteBundle {
                 texture: effect_resources.boom_texture_handle.clone(),
                 transform: Transform::from_xyz(
-                    explosion.pos.x as f32 - b.width as f32 / 2.0 + 0.5,
-                    explosion.pos.y as f32 - b.height as f32 / 2.0 + 0.5,
+                    explosion.pos.x as f32 - b.width() as f32 / 2.0 + 0.5,
+                    explosion.pos.y as f32 - b.height() as f32 / 2.0 + 0.5,
                     12.0,
                 )
                 .with_scale(Vec3::new(0.02, 0.02, 1.0)),

@@ -8,8 +8,8 @@ impl Plugin for ApplePlugin {
             Update,
             apple_system
                 .run_if(in_state(GameState::InGame))
-                .after(snake::damage_snake_system)
-                .after(snake::snake_system)
+                .after(game::damage_snake_system)
+                .after(game::snake_system)
                 .after(reset_game),
         );
     }
@@ -49,7 +49,10 @@ fn apple_system(
                     pos = if let AppleEv::SpawnPos(set_pos) = apple_ev {
                         *set_pos
                     } else {
-                        IVec2::new(rng.gen_range(0..b.width), rng.gen_range(0..b.height))
+                        IVec2::new(
+                            rng.gen_range(0..b.width()) as i32,
+                            rng.gen_range(0..b.height()) as i32,
+                        )
                     };
 
                     count += 1;
@@ -77,8 +80,8 @@ fn apple_system(
                         .spawn(SpriteBundle {
                             texture: texture,
                             transform: Transform::from_xyz(
-                                pos.x as f32 - b.width as f32 / 2.0 + 0.5,
-                                pos.y as f32 - b.height as f32 / 2.0 + 0.5,
+                                pos.x as f32 - b.width() as f32 / 2.0 + 0.5,
+                                pos.y as f32 - b.height() as f32 / 2.0 + 0.5,
                                 10.0,
                             )
                             .with_scale(Vec3::splat(1.0 / 512.0)),
