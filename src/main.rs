@@ -1,19 +1,10 @@
-use bevy::{
-    prelude::*,
-    render::{camera::ScalingMode, mesh::PrimitiveTopology},
-    sprite::{MaterialMesh2dBundle, Mesh2dHandle},
-};
-use board::{Board, Direction};
+use bevy::prelude::*;
+use board::Board;
 use effects::ExplosionEv;
-// use guns::{Bullet, SpawnBulletEv};
-use meshing::*;
-use rand::Rng;
-use std::collections::{HashMap, VecDeque};
 
 mod board;
 mod effects;
 mod game;
-mod meshing;
 mod render;
 mod ui;
 
@@ -52,20 +43,10 @@ pub struct Settings {
     pub walls_debug: bool,
 }
 
-#[derive(Resource)]
-pub struct BulletTimer(Timer);
 #[derive(Resource, Default)]
 pub struct GameTime(f32);
 #[derive(Component, Deref, DerefMut)]
 pub struct AnimationTimer(Timer);
-
-#[derive(Resource)]
-struct Colours {
-    colours: Vec<Color>,
-}
-
-#[derive(Component)]
-struct BoardTile;
 
 fn main() {
     App::new()
@@ -96,14 +77,6 @@ fn main() {
             walls_debug: false,
         })
         .insert_resource(GameTime::default())
-        .insert_resource(Colours {
-            colours: vec![
-                Color::srgb(0.0, 0.7, 0.25),
-                Color::srgb(0.3, 0.4, 0.7),
-                Color::srgb(0.7, 0.4, 0.3),
-                Color::srgb(0.7, 0.7, 0.7),
-            ],
-        })
         .init_state::<GameState>()
         .add_event::<ExplosionEv>()
         .add_systems(Update, game_state)

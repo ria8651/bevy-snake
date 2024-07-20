@@ -1,5 +1,5 @@
 use crate::{
-    board::{Board, Direction},
+    board::{Board, BoardError, Direction},
     GameState, Settings,
 };
 use bevy::prelude::*;
@@ -10,6 +10,7 @@ pub struct GamePlugin;
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(TickTimer(Timer::from_seconds(1.0, TimerMode::Repeating)))
+            .insert_resource(Board::small(1))
             .insert_resource(Points(vec![0; 4]))
             .insert_resource(SnakeInputs(vec![
                 SnakeInput {
@@ -53,7 +54,7 @@ impl Plugin for GamePlugin {
                     input_queue: VecDeque::new(),
                 },
             ]))
-            .add_systems(Startup, setup_game)
+            .add_systems(OnEnter(GameState::Start), reset_game)
             .add_systems(Update, update_game.run_if(in_state(GameState::InGame)));
     }
 }
@@ -81,15 +82,15 @@ pub struct InputMap {
     pub shoot: KeyCode,
 }
 
-pub fn setup_game(mut commands: Commands) {
-    commands.spawn(Board::small(1));
+pub fn reset_game(mut board: ResMut<Board>) {
+    *board = Board::small(1);
 }
 
 pub fn update_game(
     mut input_queues: ResMut<SnakeInputs>,
-    mut meshes: ResMut<Assets<Mesh>>,
     mut timer: ResMut<TickTimer>,
-    mut board_query: Query<&mut Board>,
+    mut board: ResMut<Board>,
+    mut next_game_state: ResMut<NextState<GameState>>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     settings: Res<Settings>,
@@ -127,15 +128,20 @@ pub fn update_game(
         }
     }
 
-    // if timer.just_finished() {
-    //     let inputs: Vec<Option<Direction>> = input_queues
-    //         .iter_mut()
-    //         .map(|i| i.input_queue.pop_front())
-    //         .collect();
+    if timer.just_finished() {
+        let inputs: Vec<Option<Direction>> = input_queues
+            .iter_mut()
+            .map(|i| i.input_queue.pop_front())
+            .collect();
 
-    //     for mut board in board_query.iter_mut() {
-    //         let snakes = board.snakes();
-    //         board.tick_board(&inputs).unwrap();
-    //     }
-    // }
+        match board.tick_board(&inputs) {
+            Ok(()) => {}
+            Err(BoardError::GameOver) => {
+                next_game_state.set(GameState::GameOver);
+            }
+            Err(e) => {
+                eprintln!("Error: {:?}", e);
+            }
+        }
+    }
 }

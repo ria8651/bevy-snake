@@ -18,7 +18,14 @@ impl Plugin for UiPlugin {
 #[derive(Component)]
 struct PointId(u32);
 
-fn ui_setup(mut commands: Commands, asset_server: Res<AssetServer>, colours: Res<Colours>) {
+fn ui_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let point_colours = vec![
+        Color::srgb(0.0, 0.7, 0.25),
+        Color::srgb(0.3, 0.4, 0.7),
+        Color::srgb(0.7, 0.4, 0.3),
+        Color::srgb(0.7, 0.7, 0.7),
+    ];
+
     // point counters
     commands
         .spawn(NodeBundle {
@@ -44,7 +51,7 @@ fn ui_setup(mut commands: Commands, asset_server: Res<AssetServer>, colours: Res
                                 style: TextStyle {
                                     font: asset_server.load("fonts/FiraSans-Bold.ttf"),
                                     font_size: 40.0,
-                                    color: colours.colours[i],
+                                    color: point_colours[i],
                                 },
                             }],
                             ..default()

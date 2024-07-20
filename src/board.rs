@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 
+use std::ops::{Index, IndexMut};
+
 use bevy::prelude::*;
-use rand::Rng;
+use rand::{rngs::StdRng, seq::IteratorRandom, Rng, SeedableRng};
 use thiserror::Error;
 
 #[derive(Clone, Copy, Debug)]
@@ -15,6 +17,7 @@ pub enum Cell {
 #[derive(Resource, Component, Clone)]
 pub struct Board {
     cells: Vec<Cell>,
+    rng: StdRng,
     width: usize,
     height: usize,
     snakes: usize,
@@ -23,8 +26,10 @@ pub struct Board {
 impl Board {
     pub fn new(width: usize, height: usize, snakes: usize) -> Self {
         let cells = vec![Cell::Empty; width * height];
+        let rng = StdRng::from_entropy();
         Self {
             cells,
+            rng,
             width,
             height,
             snakes,
@@ -35,13 +40,13 @@ impl Board {
         let mut board = Self::new(10, 9, snakes);
 
         if snakes == 1 {
-            board.set(7, 4, Cell::Apple);
+            board[IVec2::new(7, 4)] = Cell::Apple;
             for i in 0..4 {
                 let cell = Cell::Snake {
                     id: 0,
                     part: i as u8,
                 };
-                board.set(i, 4, cell);
+                board[IVec2::new(i as i32, 4)] = cell;
             }
         } else {
             unimplemented!("Only 1 snake is supported for now");
@@ -50,32 +55,23 @@ impl Board {
         board
     }
 
-    pub fn get(&self, x: usize, y: usize) -> Cell {
-        #[cfg(debug_assertions)]
-        {
-            if x >= self.width || y >= self.height {
-                panic!("Out of bounds: ({}, {})", x, y);
-            }
+    pub fn get(&self, pos: IVec2) -> Result<Cell, CellError> {
+        if !self.in_bounds(pos) {
+            return Err(CellError::OutOfBounds);
         }
-        self.cells[y * self.width + x]
+        Ok(self[pos])
     }
 
-    pub fn set(&mut self, x: usize, y: usize, cell: Cell) {
-        #[cfg(debug_assertions)]
-        {
-            if x >= self.width || y >= self.height {
-                panic!("Out of bounds: ({}, {})", x, y);
-            }
+    pub fn set(&mut self, pos: IVec2, cell: Cell) -> Result<(), CellError> {
+        if !self.in_bounds(pos) {
+            return Err(CellError::OutOfBounds);
         }
-        self.cells[y * self.width + x] = cell;
+        self[pos] = cell;
+        Ok(())
     }
 
-    pub fn get_vec(&self, pos: IVec2) -> Cell {
-        self.get(pos.x as usize, pos.y as usize)
-    }
-
-    pub fn set_vec(&mut self, pos: IVec2, cell: Cell) {
-        self.set(pos.x as usize, pos.y as usize, cell);
+    pub fn in_bounds(&self, pos: IVec2) -> bool {
+        pos.x >= 0 && pos.y >= 0 && pos.x < self.width as i32 && pos.y < self.height as i32
     }
 
     pub fn spawn_apple<R: Rng>(&mut self, rng: &mut R) -> Result<(), ()> {
@@ -84,38 +80,37 @@ impl Board {
             .iter()
             .enumerate()
             .filter(|(_, cell)| matches!(cell, Cell::Empty))
-            .collect::<Vec<_>>();
+            .choose(rng);
 
-        if empty.is_empty() {
-            return Err(());
+        if let Some((i, _)) = empty {
+            self.cells[i] = Cell::Apple;
+            Ok(())
+        } else {
+            Err(())
         }
-
-        let (i, _) = empty[rng.gen_range(0..empty.len())];
-        self.cells[i] = Cell::Apple;
-
-        Ok(())
     }
 
     pub fn tick_board(&mut self, inputs: &[Option<Direction>]) -> Result<(), BoardError> {
-        let mut heads = vec![(IVec2::ZERO, IVec2::ZERO, 0); self.snakes];
-        for (pos, cell) in self.cells() {
-            if let Cell::Snake { id, part } = cell {
-                if heads[id as usize].2 < part {
-                    let neck = heads[id as usize].0;
-                    heads[id as usize] = (pos, neck, part);
-                }
-            }
-        }
-
         let mut grow = vec![false; self.snakes];
-        for snake in 0..self.snakes {
-            let (head, neck, length) = heads[snake];
-            let dir = *inputs.get(snake).ok_or(BoardError::NotEnoughInputs)?;
+        for (snake_id, snake) in self.snakes().into_iter().enumerate() {
+            if snake.len() < 2 {
+                return Err(BoardError::SnakeTooShort {
+                    snake: snake_id as u8,
+                });
+            }
 
-            let current_dir = Direction::try_from(head - neck)
-                .map_err(|_| BoardError::HeadNotAttachedToNeck { snake: snake as u8 })?;
+            let (head, head_part) = snake[snake.len() - 1];
+            let (neck, _) = snake[snake.len() - 2];
 
-            let dir = match dir {
+            let input = *inputs.get(snake_id).ok_or(BoardError::NotEnoughInputs)?;
+            let current_dir = Direction::try_from(head - neck).map_err(|_| {
+                BoardError::HeadNotAttachedToNeck {
+                    snake: snake_id as u8,
+                }
+            })?;
+
+            // dont allow going back
+            let dir = match input {
                 Some(d) => {
                     if d != current_dir.opposite() {
                         d
@@ -127,25 +122,18 @@ impl Board {
             };
 
             let new_head = head + dir.as_vec2();
-
-            let cell = self.get_vec(new_head);
-            match cell {
-                Cell::Wall | Cell::Snake { .. } => {
-                    return Err(BoardError::GameOver);
-                }
+            let new_head_cell = self.get(new_head).map_err(|_| BoardError::GameOver)?;
+            match new_head_cell {
                 Cell::Apple => {
-                    grow[snake] = true;
+                    grow[snake_id] = true;
                 }
-                Cell::Empty => {}
+                _ => {}
             }
 
-            self.set_vec(
-                new_head,
-                Cell::Snake {
-                    id: snake as u8,
-                    part: length + 1,
-                },
-            );
+            self[new_head] = Cell::Snake {
+                id: snake_id as u8,
+                part: head_part + 1,
+            };
         }
 
         for (_, cell) in self.cells_mut() {
@@ -163,7 +151,12 @@ impl Board {
             }
         }
 
-        info!("ticked board");
+        for i in 0..self.snakes {
+            if grow[i] {
+                self.spawn_apple(&mut rand::thread_rng())
+                    .map_err(|_| BoardError::GameOver)?;
+            }
+        }
 
         Ok(())
     }
@@ -184,6 +177,22 @@ impl Board {
         })
     }
 
+    pub fn snakes(&self) -> Vec<Vec<(IVec2, u8)>> {
+        let mut snakes = Vec::new();
+        for (pos, cell) in self.cells() {
+            if let Cell::Snake { id, part } = cell {
+                while snakes.len() <= id as usize {
+                    snakes.push(Vec::new());
+                }
+                snakes[id as usize].push((pos, part));
+            }
+        }
+        for i in 0..snakes.len() {
+            snakes[i].sort_by_key(|(_, part)| *part);
+        }
+        snakes
+    }
+
     pub fn width(&self) -> usize {
         self.width
     }
@@ -192,8 +201,28 @@ impl Board {
         self.height
     }
 
-    pub fn snakes(&self) -> usize {
+    pub fn snake_count(&self) -> usize {
         self.snakes
+    }
+}
+
+impl Index<IVec2> for Board {
+    type Output = Cell;
+
+    fn index(&self, index: IVec2) -> &Self::Output {
+        if !self.in_bounds(index) {
+            panic!("Index out of bounds");
+        }
+        &self.cells[index.y as usize * self.width + index.x as usize]
+    }
+}
+
+impl IndexMut<IVec2> for Board {
+    fn index_mut(&mut self, index: IVec2) -> &mut Self::Output {
+        if !self.in_bounds(index) {
+            panic!("Index out of bounds");
+        }
+        &mut self.cells[index.y as usize * self.width + index.x as usize]
     }
 }
 
@@ -201,7 +230,7 @@ impl std::fmt::Debug for Board {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for y in 0..self.height {
             for x in 0..self.width {
-                let cell = self.get(x, y);
+                let cell = self[IVec2::new(x as i32, y as i32)];
                 let c = match cell {
                     Cell::Empty => ' ',
                     Cell::Wall => '#',
@@ -226,10 +255,18 @@ impl std::fmt::Debug for Board {
 pub enum BoardError {
     #[error("Not enough inputs")]
     NotEnoughInputs,
+    #[error("Snake {snake} has less than 2 parts")]
+    SnakeTooShort { snake: u8 },
     #[error("Head not attached to neck for snake {snake}")]
     HeadNotAttachedToNeck { snake: u8 },
     #[error("Game over")]
     GameOver,
+}
+
+#[derive(Error, Debug)]
+pub enum CellError {
+    #[error("Cell lookup out of bounds")]
+    OutOfBounds,
 }
 
 #[derive(PartialEq, Clone, Copy)]
