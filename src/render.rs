@@ -1,4 +1,8 @@
-use crate::board::{Board, Cell};
+use crate::{
+    board::{Board, Cell},
+    game::TickTimer,
+    Settings,
+};
 use bevy::{
     prelude::*,
     render::camera::ScalingMode,
@@ -67,6 +71,8 @@ fn draw_board(
     board_tiles: Query<Entity, With<BoardTile>>,
     snake_parts: Query<Entity, With<SnakePart>>,
     render_resources: Res<RenderResources>,
+    tick_timer: Res<TickTimer>,
+    settings: Res<Settings>,
 ) {
     let board_pos = |pos: Vec2, depth: f32| -> Transform {
         Transform::from_xyz(
@@ -106,6 +112,16 @@ fn draw_board(
                 ));
             }
         }
+
+        for (_, &entity) in apples.iter() {
+            commands.entity(entity).despawn();
+        }
+        apples.clear();
+
+        for (_, &entity) in walls.iter() {
+            commands.entity(entity).despawn();
+        }
+        walls.clear();
 
         *board_size = (board.width(), board.height());
     }
@@ -164,6 +180,9 @@ fn draw_board(
         commands.entity(entity).despawn();
     }
 
+    let mut interpolation = tick_timer.elapsed_secs() / tick_timer.duration().as_secs_f32() - 0.5;
+    interpolation *= settings.interpolation as u32 as f32;
+
     for (snake_id, snake) in board.snakes().into_iter().enumerate() {
         if snake.len() < 2 {
             continue;
@@ -172,7 +191,9 @@ fn draw_board(
         for i in 1..snake.len() {
             let (pos, _) = snake[i];
             let (prev_pos, _) = snake[i - 1];
-            let mid_pos = (pos.as_vec2() + prev_pos.as_vec2()) / 2.0;
+            // let mid_pos = (pos.as_vec2() + prev_pos.as_vec2()) / 2.0;
+            let mid_pos =
+                prev_pos.as_vec2() + (pos.as_vec2() - prev_pos.as_vec2()) * (interpolation + 0.5);
 
             let capsule_pos = board_pos(mid_pos, 0.0);
             commands.spawn((

@@ -10,7 +10,7 @@ pub struct GamePlugin;
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(TickTimer(Timer::from_seconds(1.0, TimerMode::Repeating)))
-            .insert_resource(Board::small(1))
+            .insert_resource(Board::empty(0, 0, 0))
             .insert_resource(Points(vec![0; 4]))
             .insert_resource(SnakeInputs(vec![
                 SnakeInput {
@@ -82,8 +82,16 @@ pub struct InputMap {
     pub shoot: KeyCode,
 }
 
-pub fn reset_game(mut board: ResMut<Board>) {
-    *board = Board::small(1);
+pub fn reset_game(
+    mut board: ResMut<Board>,
+    mut input_queues: ResMut<SnakeInputs>,
+    settings: Res<Settings>,
+) {
+    *board = Board::new(settings.board_settings);
+
+    for SnakeInput { input_queue, .. } in input_queues.iter_mut() {
+        input_queue.clear();
+    }
 }
 
 pub fn update_game(

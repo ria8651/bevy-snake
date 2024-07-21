@@ -1,15 +1,20 @@
-use super::*;
+use crate::{
+    board::{AppleCount, BoardSize, PlayerCount},
+    game::Points,
+    GameState, Settings,
+};
+use bevy::prelude::*;
 use bevy_inspector_egui::{
     bevy_egui::{EguiContexts, EguiPlugin},
-    egui,
+    egui, DefaultInspectorConfigPlugin,
 };
-use game::Points;
 
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(EguiPlugin)
+        app.add_plugins((EguiPlugin, DefaultInspectorConfigPlugin))
+            .register_type::<Settings>()
             .add_systems(Startup, ui_setup)
             .add_systems(Update, ui_system);
     }
@@ -70,42 +75,55 @@ fn ui_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
 }
 
 fn ui_system(
-    mut point_query: Query<(&PointId, &mut Text, &mut Style)>,
+    mut _point_query: Query<(&PointId, &mut Text, &mut Style)>,
     mut contexts: EguiContexts,
     mut settings: ResMut<Settings>,
-    points: Res<Points>,
+    mut next_game_state: ResMut<NextState<GameState>>,
+    _type_registry: Res<AppTypeRegistry>,
+    _points: Res<Points>,
 ) {
     egui::Window::new("Settings").show(contexts.ctx_mut(), |ui| {
         ui.label(format!("tps: {:.1}", settings.tps));
 
-        ui.add(egui::Slider::new(&mut settings.snake_count, 1..=4).text("Players"));
+        // ui_for_value(settings.as_mut(), ui, &type_registry.read());
 
-        ui.checkbox(&mut settings.tps_ramp, "Speed ramp");
-        if !settings.tps_ramp {
-            ui.horizontal(|ui| {
-                ui.label("Speed: ");
-                ui.selectable_value(&mut settings.tps, 5.0, "Slow");
-                ui.selectable_value(&mut settings.tps, 7.5, "Medium");
-                ui.selectable_value(&mut settings.tps, 10.0, "Fast");
-            });
-        }
-
+        let bs = &mut settings.board_settings;
         ui.horizontal(|ui| {
-            ui.label("Board size: ");
-            ui.selectable_value(&mut settings.board_size, BoardSize::Small, "Small");
-            ui.selectable_value(&mut settings.board_size, BoardSize::Medium, "Medium");
-            ui.selectable_value(&mut settings.board_size, BoardSize::Large, "Large");
+            ui.label("Players: ");
+            ui.selectable_value(&mut bs.players, PlayerCount::One, "One");
+            ui.selectable_value(&mut bs.players, PlayerCount::Two, "Two");
+            ui.selectable_value(&mut bs.players, PlayerCount::Three, "Three");
+            ui.selectable_value(&mut bs.players, PlayerCount::Four, "Four");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Board Size: ");
+            ui.selectable_value(&mut bs.board_size, BoardSize::Small, "Small");
+            ui.selectable_value(&mut bs.board_size, BoardSize::Medium, "Medium");
+            ui.selectable_value(&mut bs.board_size, BoardSize::Large, "Large");
         });
 
         ui.horizontal(|ui| {
             ui.label("Apples: ");
-            ui.selectable_value(&mut settings.apple_count, 1, "One");
-            ui.selectable_value(&mut settings.apple_count, 3, "Three");
-            ui.selectable_value(&mut settings.apple_count, 5, "Five");
+            ui.selectable_value(&mut bs.apples, AppleCount::One, "One");
+            ui.selectable_value(&mut bs.apples, AppleCount::Three, "Three");
+            ui.selectable_value(&mut bs.apples, AppleCount::Five, "Five");
         });
+
+        ui.horizontal(|ui| {
+            ui.label("Speed: ");
+            ui.selectable_value(&mut settings.tps, 5.0, "Slow");
+            ui.selectable_value(&mut settings.tps, 7.5, "Medium");
+            ui.selectable_value(&mut settings.tps, 10.0, "Fast");
+            ui.selectable_value(&mut settings.tps, 0.0, "Ramp");
+        });
+        settings.tps_ramp = settings.tps == 0.0;
 
         ui.checkbox(&mut settings.walls, "Walls");
         ui.checkbox(&mut settings.walls_debug, "Walls debug");
+
+        if ui.button("New Game").clicked() {
+            next_game_state.set(GameState::Start);
+        }
 
         ui.label("Controls");
         ui.label("Snake 1: WASD to move, LShift to shoot");

@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use board::Board;
+use board::{AppleCount, Board, BoardSettings, BoardSize, PlayerCount};
 use effects::ExplosionEv;
 
 mod board;
@@ -18,27 +18,18 @@ pub enum GameState {
 }
 
 #[derive(PartialEq, Eq)]
-pub enum BoardSize {
-    Small,
-    Medium,
-    Large,
-}
-
-#[derive(PartialEq, Eq)]
 pub enum Speed {
     Slow,
     Medium,
     Fast,
 }
 
-#[derive(Resource)]
+#[derive(Resource, Reflect)]
 pub struct Settings {
     pub interpolation: bool,
     pub tps: f32,
     pub tps_ramp: bool,
-    pub snake_count: u32,
-    pub apple_count: u32,
-    pub board_size: BoardSize,
+    pub board_settings: BoardSettings,
     pub walls: bool,
     pub walls_debug: bool,
 }
@@ -70,9 +61,11 @@ fn main() {
             interpolation: true,
             tps: 7.5,
             tps_ramp: false,
-            snake_count: 1,
-            apple_count: 3,
-            board_size: BoardSize::Small,
+            board_settings: BoardSettings {
+                board_size: BoardSize::Medium,
+                apples: AppleCount::One,
+                players: PlayerCount::One,
+            },
             walls: false,
             walls_debug: false,
         })
@@ -80,7 +73,6 @@ fn main() {
         .init_state::<GameState>()
         .add_event::<ExplosionEv>()
         .add_systems(Update, game_state)
-        // .add_systems(OnEnter(GameState::Start), reset_game)
         .add_systems(Update, settings_system.run_if(in_state(GameState::InGame)))
         .run();
 }

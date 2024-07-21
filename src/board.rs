@@ -24,7 +24,7 @@ pub struct Board {
 }
 
 impl Board {
-    pub fn new(width: usize, height: usize, snakes: usize) -> Self {
+    pub fn empty(width: usize, height: usize, snakes: usize) -> Self {
         let cells = vec![Cell::Empty; width * height];
         let rng = StdRng::from_entropy();
         Self {
@@ -36,20 +36,78 @@ impl Board {
         }
     }
 
-    pub fn small(snakes: usize) -> Self {
-        let mut board = Self::new(10, 9, snakes);
+    pub fn new(board_settings: BoardSettings) -> Self {
+        let (width, height) = match board_settings.board_size {
+            BoardSize::Small => (10, 9),
+            BoardSize::Medium => (17, 15),
+            BoardSize::Large => (24, 21),
+        };
 
-        if snakes == 1 {
-            board[IVec2::new(7, 4)] = Cell::Apple;
+        let snakes = match board_settings.players {
+            PlayerCount::One => 1,
+            PlayerCount::Two => 2,
+            PlayerCount::Three => 3,
+            PlayerCount::Four => 4,
+        };
+
+        let mut board = Self::empty(width, height, snakes);
+
+        // add snakes
+        if let PlayerCount::One = board_settings.players {
+            let offset = match board_settings.board_size {
+                BoardSize::Small => 0,
+                BoardSize::Medium => 1,
+                BoardSize::Large => 3,
+            };
+
+            let y = height as i32 / 2;
             for i in 0..4 {
-                let cell = Cell::Snake {
+                board[IVec2::new(offset + i, y)] = Cell::Snake {
                     id: 0,
                     part: i as u8,
                 };
-                board[IVec2::new(i as i32, 4)] = cell;
             }
         } else {
-            unimplemented!("Only 1 snake is supported for now");
+            let positions = vec![
+                [(1, -1), (2, -1), (3, -1), (4, -1)],
+                [(-1, 1), (-2, 1), (-3, 1), (-4, 1)],
+                [(1, 1), (1, 2), (1, 3), (1, 4)],
+                [(-1, -1), (-1, -2), (-1, -3), (-1, -4)],
+            ];
+            for (snake_id, positions) in positions[..snakes].into_iter().enumerate() {
+                for (i, (mut x, mut y)) in positions.iter().enumerate() {
+                    if x < 0 {
+                        x += width as i32 - 1;
+                    }
+                    if y < 0 {
+                        y += height as i32 - 1;
+                    }
+                    board[IVec2::new(x, y)] = Cell::Snake {
+                        id: snake_id as u8,
+                        part: i as u8,
+                    };
+                }
+            }
+        }
+
+        // add apples
+        let apple_center = if let PlayerCount::One = board_settings.players {
+            match board_settings.board_size {
+                BoardSize::Small => 6,
+                BoardSize::Medium => 11,
+                BoardSize::Large => 16,
+            }
+        } else {
+            width as i32 / 2
+        };
+        let apple_pattern = match board_settings.apples {
+            AppleCount::One => vec![(1, 0)],
+            AppleCount::Three => vec![(1, 0), (-1, 2), (-1, -2)],
+            AppleCount::Five => vec![(0, 0), (2, 2), (2, -2), (-2, 2), (-2, -2)],
+        };
+        let apple_y = height as i32 / 2;
+        for (x, y) in apple_pattern {
+            board[IVec2::new(apple_center + x, apple_y + y)] = Cell::Apple;
         }
 
         board
@@ -92,6 +150,7 @@ impl Board {
 
     pub fn tick_board(&mut self, inputs: &[Option<Direction>]) -> Result<(), BoardError> {
         let mut grow = vec![false; self.snakes];
+        let mut new_heads = Vec::new();
         for (snake_id, snake) in self.snakes().into_iter().enumerate() {
             if snake.len() < 2 {
                 return Err(BoardError::SnakeTooShort {
@@ -122,10 +181,21 @@ impl Board {
             };
 
             let new_head = head + dir.as_vec2();
-            let new_head_cell = self.get(new_head).map_err(|_| BoardError::GameOver)?;
-            match new_head_cell {
+            if !self.in_bounds(new_head) {
+                return Err(BoardError::GameOver);
+            }
+
+            match self[new_head] {
                 Cell::Apple => {
                     grow[snake_id] = true;
+                }
+                Cell::Wall => {
+                    return Err(BoardError::GameOver);
+                }
+                Cell::Snake { id, part } => {
+                    if id != snake_id as u8 || part != 0 {
+                        return Err(BoardError::GameOver);
+                    }
                 }
                 _ => {}
             }
@@ -134,6 +204,8 @@ impl Board {
                 id: snake_id as u8,
                 part: head_part + 1,
             };
+
+            new_heads.push((new_head, head_part));
         }
 
         for (_, cell) in self.cells_mut() {
@@ -153,8 +225,7 @@ impl Board {
 
         for i in 0..self.snakes {
             if grow[i] {
-                self.spawn_apple(&mut rand::thread_rng())
-                    .map_err(|_| BoardError::GameOver)?;
+                self.spawn_apple(&mut rand::thread_rng()).ok();
             }
         }
 
@@ -249,6 +320,35 @@ impl std::fmt::Debug for Board {
         }
         Ok(())
     }
+}
+
+#[derive(Reflect, PartialEq, Eq, Clone, Copy, Debug)]
+pub enum BoardSize {
+    Small,
+    Medium,
+    Large,
+}
+
+#[derive(Reflect, PartialEq, Eq, Clone, Copy, Debug)]
+pub enum AppleCount {
+    One,
+    Three,
+    Five,
+}
+
+#[derive(Reflect, PartialEq, Eq, Clone, Copy, Debug)]
+pub enum PlayerCount {
+    One,
+    Two,
+    Three,
+    Four,
+}
+
+#[derive(Reflect, Clone, Copy, Debug)]
+pub struct BoardSettings {
+    pub board_size: BoardSize,
+    pub apples: AppleCount,
+    pub players: PlayerCount,
 }
 
 #[derive(Error, Debug)]
