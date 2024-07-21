@@ -2,7 +2,7 @@ use crate::{
     board::{Board, BoardError, Direction},
     GameState, Settings,
 };
-use bevy::prelude::*;
+use bevy::{prelude::*, transform::commands};
 use std::{collections::VecDeque, time::Duration};
 
 pub struct GamePlugin;
@@ -82,7 +82,11 @@ pub struct InputMap {
     pub shoot: KeyCode,
 }
 
+#[derive(Resource, Deref, DerefMut)]
+pub struct LastBoard(Option<Board>);
+
 pub fn reset_game(
+    mut commands: Commands,
     mut board: ResMut<Board>,
     mut input_queues: ResMut<SnakeInputs>,
     settings: Res<Settings>,
@@ -92,12 +96,15 @@ pub fn reset_game(
     for SnakeInput { input_queue, .. } in input_queues.iter_mut() {
         input_queue.clear();
     }
+
+    commands.insert_resource(LastBoard(None));
 }
 
 pub fn update_game(
     mut input_queues: ResMut<SnakeInputs>,
     mut timer: ResMut<TickTimer>,
     mut board: ResMut<Board>,
+    mut last_board: ResMut<LastBoard>,
     mut next_game_state: ResMut<NextState<GameState>>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -142,6 +149,7 @@ pub fn update_game(
             .map(|i| i.input_queue.pop_front())
             .collect();
 
+        *last_board = LastBoard(Some(board.clone()));
         match board.tick_board(&inputs) {
             Ok(()) => {}
             Err(BoardError::GameOver) => {

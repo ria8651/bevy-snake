@@ -1,7 +1,7 @@
 use crate::{
     board::{Board, Cell},
-    game::TickTimer,
-    Settings,
+    game::{LastBoard, TickTimer},
+    GameState, Settings,
 };
 use bevy::{
     prelude::*,
@@ -15,7 +15,7 @@ pub struct BoardRenderPlugin;
 impl Plugin for BoardRenderPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, setup)
-            .add_systems(Update, draw_board);
+            .add_systems(Update, draw_board.run_if(in_state(GameState::InGame)));
     }
 }
 
@@ -25,7 +25,8 @@ struct MainCamera;
 #[derive(Resource)]
 struct RenderResources {
     apple_texture: Handle<Image>,
-    capsule_mesh: Handle<Mesh>,
+    circle_mesh: Handle<Mesh>,
+    square_mesh: Handle<Mesh>,
     snake_materials: Vec<Handle<ColorMaterial>>,
 }
 
@@ -45,7 +46,9 @@ fn setup(
 
     commands.insert_resource(RenderResources {
         apple_texture: asset_server.load("images/apple.png"),
-        capsule_mesh: meshes.add(Capsule2d::new(0.35, 1.0)),
+        // capsule_mesh: meshes.add(Capsule2d::new(0.35, 1.0)),
+        circle_mesh: meshes.add(Circle::new(0.35)),
+        square_mesh: meshes.add(Rectangle::from_size(Vec2::new(0.7, 1.0))),
         snake_materials: vec![
             materials.add(Color::srgb(0.0, 0.7, 0.25)),
             materials.add(Color::srgb(0.3, 0.4, 0.7)),
@@ -68,6 +71,7 @@ fn draw_board(
     mut apples: Local<HashMap<IVec2, Entity>>,
     mut walls: Local<HashMap<IVec2, Entity>>,
     board: Res<Board>,
+    last_board: Res<LastBoard>,
     board_tiles: Query<Entity, With<BoardTile>>,
     snake_parts: Query<Entity, With<SnakePart>>,
     render_resources: Res<RenderResources>,
@@ -180,30 +184,60 @@ fn draw_board(
         commands.entity(entity).despawn();
     }
 
-    let mut interpolation = tick_timer.elapsed_secs() / tick_timer.duration().as_secs_f32() - 0.5;
+    let mut interpolation = tick_timer.elapsed_secs() / tick_timer.duration().as_secs_f32();
     interpolation *= settings.interpolation as u32 as f32;
 
+    let last_snakes = last_board.as_ref().as_ref().map(|b| b.snakes());
     for (snake_id, snake) in board.snakes().into_iter().enumerate() {
         if snake.len() < 2 {
             continue;
         }
 
+        let mut snake: Vec<_> = snake.iter().map(|(pos, _)| pos.as_vec2()).collect();
+        let last_snake = last_snakes
+            .as_ref()
+            .and_then(|s| s.get(snake_id))
+            .map(|s| s.iter().map(|(pos, _)| pos.as_vec2()).collect::<Vec<_>>())
+            .filter(|s| s.len() >= 2)
+            .unwrap_or(snake.clone());
+
+        // let n = snake.len() - 2; // neck
+        // let h = snake.len() - 1; // head
+        // snake[0] = snake[0] + (snake[1] - snake[0]) * interpolation;
+        // snake[h] = snake[h] + (snake[h] - snake[n]) * interpolation;
+        let l = snake.len() - 1;
+        let ll = last_snake.len() - 1;
+        snake[0] = last_snake[0] + (snake[0] - last_snake[0]) * interpolation;
+        snake[l] = last_snake[ll] + (snake[l] - last_snake[ll]) * interpolation;
+        for i in 0..snake.len() {
+            commands.spawn((
+                MaterialMesh2dBundle {
+                    mesh: Mesh2dHandle(render_resources.circle_mesh.clone()),
+                    material: render_resources.snake_materials[snake_id].clone(),
+                    transform: board_pos(snake[i], 0.0),
+                    ..default()
+                },
+                SnakePart,
+            ));
+        }
+
         for i in 1..snake.len() {
-            let (pos, _) = snake[i];
-            let (prev_pos, _) = snake[i - 1];
-            // let mid_pos = (pos.as_vec2() + prev_pos.as_vec2()) / 2.0;
-            let mid_pos =
-                prev_pos.as_vec2() + (pos.as_vec2() - prev_pos.as_vec2()) * (interpolation + 0.5);
+            let pos = snake[i];
+            let prev = snake[i - 1];
+            let mid_pos = (pos + prev) / 2.0;
+            let scale = (pos - prev).length();
 
             let capsule_pos = board_pos(mid_pos, 0.0);
             commands.spawn((
                 MaterialMesh2dBundle {
-                    mesh: Mesh2dHandle(render_resources.capsule_mesh.clone()),
+                    mesh: Mesh2dHandle(render_resources.square_mesh.clone()),
                     material: render_resources.snake_materials[snake_id].clone(),
-                    transform: capsule_pos.looking_at(
-                        capsule_pos.translation + Vec3::Z,
-                        (pos.as_vec2() - mid_pos).extend(0.0),
-                    ),
+                    transform: capsule_pos
+                        .looking_at(
+                            capsule_pos.translation + Vec3::Z,
+                            (pos - mid_pos).extend(0.0),
+                        )
+                        .with_scale(Vec3::new(1.0, scale, 1.0)),
                     ..default()
                 },
                 SnakePart,
