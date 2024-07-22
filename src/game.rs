@@ -1,8 +1,9 @@
 use crate::{
     board::{Board, BoardError, Direction},
+    web::{WebCommands, WebResources, WebUpdates},
     GameState, Settings,
 };
-use bevy::{prelude::*, transform::commands};
+use bevy::prelude::*;
 use std::{collections::VecDeque, time::Duration};
 
 pub struct GamePlugin;
@@ -106,6 +107,7 @@ pub fn update_game(
     mut board: ResMut<Board>,
     mut last_board: ResMut<LastBoard>,
     mut next_game_state: ResMut<NextState<GameState>>,
+    web_resources: Res<WebResources>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     settings: Res<Settings>,
@@ -146,7 +148,17 @@ pub fn update_game(
     if timer.just_finished() {
         let inputs: Vec<Option<Direction>> = input_queues
             .iter_mut()
-            .map(|i| i.input_queue.pop_front())
+            .map(|i| {
+                i.input_queue.pop_front().or_else(|| {
+                    web_resources
+                        .web_commands
+                        .try_recv()
+                        .ok()
+                        .and_then(|c| match c {
+                            WebCommands::SendInput { direction } => Some(direction),
+                        })
+                })
+            })
             .collect();
 
         *last_board = LastBoard(Some(board.clone()));
@@ -159,5 +171,12 @@ pub fn update_game(
                 eprintln!("Error: {:?}", e);
             }
         }
+
+        web_resources
+            .web_updates
+            .send(WebUpdates::UpdateBoard {
+                board: board.clone(),
+            })
+            .unwrap();
     }
 }

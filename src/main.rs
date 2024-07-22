@@ -7,6 +7,7 @@ mod effects;
 mod game;
 mod render;
 mod ui;
+mod web;
 
 #[derive(States, Default, Debug, Hash, PartialEq, Eq, Clone)]
 pub enum GameState {
@@ -55,6 +56,7 @@ fn main() {
             ui::UiPlugin,
             game::GamePlugin,
             render::BoardRenderPlugin,
+            web::WebPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.1, 0.1, 0.1)))
         .insert_resource(Settings {

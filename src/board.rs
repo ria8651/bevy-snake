@@ -4,9 +4,10 @@ use std::ops::{Index, IndexMut};
 
 use bevy::prelude::*;
 use rand::{rngs::StdRng, seq::IteratorRandom, Rng, SeedableRng};
+use serde::Serialize;
 use thiserror::Error;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize)]
 pub enum Cell {
     Empty,
     Wall,
@@ -14,9 +15,10 @@ pub enum Cell {
     Apple,
 }
 
-#[derive(Resource, Component, Clone)]
+#[derive(Resource, Component, Clone, Serialize)]
 pub struct Board {
     cells: Vec<Cell>,
+    #[serde(skip)]
     rng: StdRng,
     width: usize,
     height: usize,
@@ -351,6 +353,16 @@ pub struct BoardSettings {
     pub players: PlayerCount,
 }
 
+impl Default for BoardSettings {
+    fn default() -> Self {
+        Self {
+            board_size: BoardSize::Small,
+            apples: AppleCount::Five,
+            players: PlayerCount::One,
+        }
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum BoardError {
     #[error("Not enough inputs")]
@@ -421,6 +433,20 @@ impl TryFrom<IVec2> for Direction {
             [0, -1] => Ok(Direction::Down),
             [1, 0] => Ok(Direction::Right),
             [-1, 0] => Ok(Direction::Left),
+            _ => Err(()),
+        }
+    }
+}
+
+impl TryFrom<usize> for Direction {
+    type Error = ();
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Direction::Up),
+            1 => Ok(Direction::Down),
+            2 => Ok(Direction::Left),
+            3 => Ok(Direction::Right),
             _ => Err(()),
         }
     }
