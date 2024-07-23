@@ -1,10 +1,9 @@
 #![allow(dead_code)]
 
-use std::ops::{Index, IndexMut};
-
 use bevy::prelude::*;
-use rand::{rngs::StdRng, seq::IteratorRandom, Rng, SeedableRng};
-use serde::Serialize;
+use rand::{rngs::StdRng, seq::IteratorRandom, SeedableRng};
+use serde::{Deserialize, Serialize};
+use std::ops::{Index, IndexMut};
 use thiserror::Error;
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -134,13 +133,13 @@ impl Board {
         pos.x >= 0 && pos.y >= 0 && pos.x < self.width as i32 && pos.y < self.height as i32
     }
 
-    pub fn spawn_apple<R: Rng>(&mut self, rng: &mut R) -> Result<(), ()> {
+    pub fn spawn_apple(&mut self) -> Result<(), ()> {
         let empty = self
             .cells
             .iter()
             .enumerate()
             .filter(|(_, cell)| matches!(cell, Cell::Empty))
-            .choose(rng);
+            .choose(&mut self.rng);
 
         if let Some((i, _)) = empty {
             self.cells[i] = Cell::Apple;
@@ -148,6 +147,118 @@ impl Board {
         } else {
             Err(())
         }
+    }
+
+    pub fn get_spawnable(&self) -> Vec<IVec2> {
+        let w = self.width as i32;
+        let h = self.height as i32;
+
+        let unspawnable = vec![
+            IVec2::new(1, 0),
+            IVec2::new(0, 1),
+            IVec2::new(w - 2, 0),
+            IVec2::new(0, h - 2),
+            IVec2::new(w - 2, h - 1),
+            IVec2::new(w - 1, h - 2),
+            IVec2::new(1, h - 1),
+            IVec2::new(w - 1, 1),
+        ];
+        let corner_cases = vec![
+            (IVec2::new(0, 2), IVec2::new(2, 0)),
+            (IVec2::new(0, h - 3), IVec2::new(w - 3, 0)),
+            (IVec2::new(w - 1, h - 3), IVec2::new(w - 3, h - 1)),
+            (IVec2::new(w - 1, 2), IVec2::new(2, h - 1)),
+        ];
+        let neighbors = vec![
+            IVec2::new(0, 1),
+            IVec2::new(1, 1),
+            IVec2::new(1, 0),
+            IVec2::new(1, -1),
+            IVec2::new(0, -1),
+            IVec2::new(-1, -1),
+            IVec2::new(-1, 0),
+            IVec2::new(-1, 1),
+        ];
+
+        let snakes = self.snakes().into_iter();
+        let heads: Vec<_> = snakes.map(|snake| snake.last().unwrap().0).collect();
+
+        let mut spawnable = Vec::new();
+        'outer: for (pos, cell) in self.cells() {
+            // only spawn in empty cells
+            if !matches!(cell, Cell::Empty) {
+                continue;
+            }
+
+            // dont spawn in corners
+            if unspawnable.contains(&pos) {
+                continue;
+            }
+
+            // dont spawn next to heads
+            for head in heads.iter() {
+                if (*head - pos).abs().length_squared() < 9 {
+                    continue 'outer;
+                }
+            }
+
+            // dont spawn next to walls
+            for neighbor in neighbors.iter() {
+                let neighbor_pos = pos + *neighbor;
+                if !self.in_bounds(neighbor_pos) {
+                    continue;
+                }
+
+                if matches!(self[neighbor_pos], Cell::Wall) {
+                    continue 'outer;
+                }
+            }
+
+            // dont spawn next to each other on walls
+            if pos.x == 0 || pos.x == self.width as i32 - 1 {
+                for dir in [-1, 1] {
+                    let block_pos = IVec2::new(pos.x, pos.y + 2 * dir);
+                    if self.in_bounds(block_pos) {
+                        if matches!(self[block_pos], Cell::Wall) {
+                            continue 'outer;
+                        }
+                    }
+                }
+            }
+            if pos.y == 0 || pos.y == self.height as i32 - 1 {
+                for dir in [-1, 1] {
+                    let block_pos = IVec2::new(pos.x + 2 * dir, pos.y);
+                    if self.in_bounds(block_pos) {
+                        if matches!(self[block_pos], Cell::Wall) {
+                            continue 'outer;
+                        }
+                    }
+                }
+            }
+
+            // stop from trapping snake in corner
+            for (corner, corner_opposite) in corner_cases.iter() {
+                if pos == *corner || pos == *corner_opposite {
+                    if matches!(self[*corner], Cell::Wall) {
+                        continue 'outer;
+                    }
+                    if matches!(self[*corner_opposite], Cell::Wall) {
+                        continue 'outer;
+                    }
+                }
+            }
+
+            spawnable.push(pos);
+        }
+
+        spawnable
+    }
+
+    pub fn spawn_wall(&mut self) -> Result<(), ()> {
+        let spawnable = self.get_spawnable();
+        let pos = spawnable.into_iter().choose(&mut self.rng).ok_or(())?;
+        self[pos] = Cell::Wall;
+        Ok(())
     }
 
     pub fn tick_board(&mut self, inputs: &[Option<Direction>]) -> Result<(), BoardError> {
@@ -227,7 +338,8 @@ impl Board {
 
         for i in 0..self.snakes {
             if grow[i] {
-                self.spawn_apple(&mut rand::thread_rng()).ok();
+                self.spawn_apple().ok();
+                self.spawn_wall().ok();
             }
         }
 
@@ -381,7 +493,7 @@ pub enum CellError {
     OutOfBounds,
 }
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, Deserialize, Serialize, Debug)]
 pub enum Direction {
     Up,
     Down,
@@ -444,9 +556,9 @@ impl TryFrom<usize> for Direction {
     fn try_from(value: usize) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(Direction::Up),
-            1 => Ok(Direction::Down),
-            2 => Ok(Direction::Left),
-            3 => Ok(Direction::Right),
+            1 => Ok(Direction::Right),
+            2 => Ok(Direction::Down),
+            3 => Ok(Direction::Left),
             _ => Err(()),
         }
     }

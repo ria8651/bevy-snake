@@ -74,6 +74,7 @@ pub struct SnakeInput {
     pub input_queue: VecDeque<Direction>,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub struct InputMap {
     pub up: KeyCode,
@@ -83,11 +84,7 @@ pub struct InputMap {
     pub shoot: KeyCode,
 }
 
-#[derive(Resource, Deref, DerefMut)]
-pub struct LastBoard(Option<Board>);
-
 pub fn reset_game(
-    mut commands: Commands,
     mut board: ResMut<Board>,
     mut input_queues: ResMut<SnakeInputs>,
     settings: Res<Settings>,
@@ -97,23 +94,24 @@ pub fn reset_game(
     for SnakeInput { input_queue, .. } in input_queues.iter_mut() {
         input_queue.clear();
     }
-
-    commands.insert_resource(LastBoard(None));
 }
 
 pub fn update_game(
     mut input_queues: ResMut<SnakeInputs>,
     mut timer: ResMut<TickTimer>,
     mut board: ResMut<Board>,
-    mut last_board: ResMut<LastBoard>,
     mut next_game_state: ResMut<NextState<GameState>>,
     web_resources: Res<WebResources>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     settings: Res<Settings>,
 ) {
-    timer.set_duration(Duration::from_secs_f32(1.0 / settings.tps));
-    timer.tick(time.delta());
+    if settings.do_game_tick {
+        timer.set_duration(Duration::from_secs_f32(1.0 / settings.tps));
+        timer.tick(time.delta());
+    } else {
+        timer.reset();
+    }
 
     for SnakeInput {
         input_map,
@@ -145,7 +143,7 @@ pub fn update_game(
         }
     }
 
-    if timer.just_finished() {
+    if timer.just_finished() || !settings.do_game_tick {
         let inputs: Vec<Option<Direction>> = input_queues
             .iter_mut()
             .map(|i| {
@@ -161,22 +159,23 @@ pub fn update_game(
             })
             .collect();
 
-        *last_board = LastBoard(Some(board.clone()));
-        match board.tick_board(&inputs) {
-            Ok(()) => {}
-            Err(BoardError::GameOver) => {
-                next_game_state.set(GameState::GameOver);
+        if inputs.iter().any(|i| i.is_some()) || settings.do_game_tick {
+            match board.tick_board(&inputs) {
+                Ok(()) => {}
+                Err(BoardError::GameOver) => {
+                    next_game_state.set(GameState::GameOver);
+                }
+                Err(e) => {
+                    eprintln!("Error: {:?}", e);
+                }
             }
-            Err(e) => {
-                eprintln!("Error: {:?}", e);
-            }
-        }
 
-        web_resources
-            .web_updates
-            .send(WebUpdates::UpdateBoard {
-                board: board.clone(),
-            })
-            .unwrap();
+            web_resources
+                .web_updates
+                .send(WebUpdates::UpdateBoard {
+                    board: board.clone(),
+                })
+                .unwrap();
+        }
     }
 }

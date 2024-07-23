@@ -1,6 +1,6 @@
 use crate::{
     board::{Board, Cell},
-    game::{LastBoard, TickTimer},
+    game::{SnakeInputs, TickTimer},
     GameState, Settings,
 };
 use bevy::{
@@ -64,6 +64,9 @@ struct BoardTile;
 #[derive(Component)]
 struct SnakePart;
 
+#[derive(Component)]
+struct DebugTile;
+
 fn draw_board(
     mut commands: Commands,
     mut camera_query: Query<&mut OrthographicProjection, With<MainCamera>>,
@@ -71,9 +74,10 @@ fn draw_board(
     mut apples: Local<HashMap<IVec2, Entity>>,
     mut walls: Local<HashMap<IVec2, Entity>>,
     board: Res<Board>,
-    last_board: Res<LastBoard>,
+    input_queues: Res<SnakeInputs>,
     board_tiles: Query<Entity, With<BoardTile>>,
     snake_parts: Query<Entity, With<SnakePart>>,
+    debug_tiles: Query<Entity, With<DebugTile>>,
     render_resources: Res<RenderResources>,
     tick_timer: Res<TickTimer>,
     settings: Res<Settings>,
@@ -187,28 +191,31 @@ fn draw_board(
     let mut interpolation = tick_timer.elapsed_secs() / tick_timer.duration().as_secs_f32();
     interpolation *= settings.interpolation as u32 as f32;
 
-    let last_snakes = last_board.as_ref().as_ref().map(|b| b.snakes());
     for (snake_id, snake) in board.snakes().into_iter().enumerate() {
         if snake.len() < 2 {
             continue;
         }
 
         let mut snake: Vec<_> = snake.iter().map(|(pos, _)| pos.as_vec2()).collect();
-        let last_snake = last_snakes
-            .as_ref()
-            .and_then(|s| s.get(snake_id))
-            .map(|s| s.iter().map(|(pos, _)| pos.as_vec2()).collect::<Vec<_>>())
-            .filter(|s| s.len() >= 2)
-            .unwrap_or(snake.clone());
 
-        // let n = snake.len() - 2; // neck
-        // let h = snake.len() - 1; // head
-        // snake[0] = snake[0] + (snake[1] - snake[0]) * interpolation;
-        // snake[h] = snake[h] + (snake[h] - snake[n]) * interpolation;
-        let l = snake.len() - 1;
-        let ll = last_snake.len() - 1;
-        snake[0] = last_snake[0] + (snake[0] - last_snake[0]) * interpolation;
-        snake[l] = last_snake[ll] + (snake[l] - last_snake[ll]) * interpolation;
+        let n = snake.len() - 2; // neck
+        let h = snake.len() - 1; // head
+        let next_input = input_queues
+            .get(snake_id)
+            .and_then(|q| q.input_queue.get(0))
+            .map(|d| d.as_vec2().as_vec2())
+            .filter(|_| interpolation > 0.5)
+            .unwrap_or(snake[h] - snake[n]);
+
+        if interpolation > 0.5 {
+            snake.insert(h, snake[h]);
+        }
+
+        let h = snake.len() - 1;
+        snake[0] = snake[0] + (snake[1] - snake[0]) * interpolation;
+        snake[h] = snake[h] + next_input * (interpolation - 0.5);
+        // snake[h] = snake[n] + (snake[h] - snake[n]) * interpolation;
+
         for i in 0..snake.len() {
             commands.spawn((
                 MaterialMesh2dBundle {
@@ -242,6 +249,24 @@ fn draw_board(
                 },
                 SnakePart,
             ));
+        }
+    }
+
+    // debug
+    for entity in debug_tiles.iter() {
+        commands.entity(entity).despawn();
+    }
+    if settings.walls_debug {
+        for pos in board.get_spawnable() {
+            let bundle = SpriteBundle {
+                sprite: Sprite {
+                    color: Color::srgba(1.0, 0.0, 0.0, 0.15),
+                    ..default()
+                },
+                transform: board_pos(pos.as_vec2(), 0.0),
+                ..default()
+            };
+            commands.spawn((bundle, DebugTile));
         }
     }
 }

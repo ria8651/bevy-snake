@@ -20,8 +20,8 @@ impl Plugin for UiPlugin {
     }
 }
 
-#[derive(Component)]
-struct PointId(u32);
+// #[derive(Component)]
+// struct PointId(u32);
 
 fn ui_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     let point_colours = vec![
@@ -48,8 +48,8 @@ fn ui_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         })
         .with_children(|parent| {
             for i in 0..4 {
-                parent
-                    .spawn(TextBundle {
+                parent.spawn((
+                    TextBundle {
                         text: Text {
                             sections: vec![TextSection {
                                 value: i.to_string(),
@@ -68,14 +68,15 @@ fn ui_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                         },
 
                         ..default()
-                    })
-                    .insert(PointId(i as u32));
+                    },
+                    // PointId(i as u32),
+                ));
             }
         });
 }
 
 fn ui_system(
-    mut _point_query: Query<(&PointId, &mut Text, &mut Style)>,
+    // mut point_query: Query<(&PointId, &mut Text, &mut Style)>,
     mut contexts: EguiContexts,
     mut settings: ResMut<Settings>,
     mut next_game_state: ResMut<NextState<GameState>>,
@@ -111,12 +112,14 @@ fn ui_system(
 
         ui.horizontal(|ui| {
             ui.label("Speed: ");
-            ui.selectable_value(&mut settings.tps, 5.0, "Slow");
+            ui.selectable_value(&mut settings.tps, -1.0, "None");
+            ui.selectable_value(&mut settings.tps, 1.0, "Slow");
             ui.selectable_value(&mut settings.tps, 7.5, "Medium");
             ui.selectable_value(&mut settings.tps, 10.0, "Fast");
-            ui.selectable_value(&mut settings.tps, 0.0, "Ramp");
+            // ui.selectable_value(&mut settings.tps, 0.0, "Ramp");
         });
         settings.tps_ramp = settings.tps == 0.0;
+        settings.do_game_tick = settings.tps != -1.0;
 
         ui.checkbox(&mut settings.walls, "Walls");
         ui.checkbox(&mut settings.walls_debug, "Walls debug");

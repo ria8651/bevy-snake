@@ -28,6 +28,7 @@ pub enum Speed {
 #[derive(Resource, Reflect)]
 pub struct Settings {
     pub interpolation: bool,
+    pub do_game_tick: bool,
     pub tps: f32,
     pub tps_ramp: bool,
     pub board_settings: BoardSettings,
@@ -61,6 +62,7 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.1, 0.1, 0.1)))
         .insert_resource(Settings {
             interpolation: true,
+            do_game_tick: true,
             tps: 7.5,
             tps_ramp: false,
             board_settings: BoardSettings {

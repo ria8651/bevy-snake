@@ -85,7 +85,6 @@ async fn board() -> (StatusCode, Json<Board>) {
     let app_state = app_state.as_mut().unwrap();
 
     while let Some(WebUpdates::UpdateBoard { board }) = app_state.web_updates.try_recv().ok() {
-        info!("Received updated board from game state: {:?}", board);
         app_state.board = board;
     }
 
@@ -93,6 +92,8 @@ async fn board() -> (StatusCode, Json<Board>) {
 }
 
 async fn send_input(Json(input): Json<Input>) -> StatusCode {
+    info!("Received input: {:?}", input);
+
     let direction = match input.direction.try_into() {
         Ok(direction) => direction,
         Err(e) => {
@@ -113,7 +114,7 @@ async fn send_input(Json(input): Json<Input>) -> StatusCode {
 }
 
 // the input to our `create_user` handler
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct Input {
-    direction: usize,
+    direction: Direction,
 }
