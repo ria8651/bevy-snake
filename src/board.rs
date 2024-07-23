@@ -165,9 +165,9 @@ impl Board {
         ];
         let corner_cases = vec![
             (IVec2::new(0, 2), IVec2::new(2, 0)),
-            (IVec2::new(0, h - 3), IVec2::new(w - 3, 0)),
-            (IVec2::new(w - 1, h - 3), IVec2::new(w - 3, h - 1)),
-            (IVec2::new(w - 1, 2), IVec2::new(2, h - 1)),
+            (IVec2::new(0, h - 3), IVec2::new(2, h - 1)),
+            (IVec2::new(w - 3, h - 1), IVec2::new(w - 1, h - 3)),
+            (IVec2::new(w - 1, 2), IVec2::new(w - 3, 0)),
         ];
         let neighbors = vec![
             IVec2::new(0, 1),
