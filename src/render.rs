@@ -14,8 +14,12 @@ pub struct BoardRenderPlugin;
 
 impl Plugin for BoardRenderPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup)
-            .add_systems(Update, draw_board.run_if(in_state(GameState::InGame)));
+        app.add_systems(Startup, setup).add_systems(
+            Update,
+            draw_board
+                .after(crate::game_state)
+                .run_if(in_state(GameState::InGame)),
+        );
     }
 }
 
@@ -137,7 +141,7 @@ fn draw_board(
     // apples
     for (pos, cell) in board.cells() {
         match cell {
-            Cell::Apple => {
+            Cell::Apple { .. } => {
                 if apples.contains_key(&pos) {
                     continue;
                 }

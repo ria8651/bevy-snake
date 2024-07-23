@@ -11,7 +11,7 @@ pub enum Cell {
     Empty,
     Wall,
     Snake { id: u8, part: u8 },
-    Apple,
+    Apple { natural: bool }, // natural apples respawn
 }
 
 #[derive(Resource, Component, Clone, Serialize)]
@@ -21,19 +21,20 @@ pub struct Board {
     rng: StdRng,
     width: usize,
     height: usize,
-    snakes: usize,
+    apples_eaten: usize,
 }
 
 impl Board {
-    pub fn empty(width: usize, height: usize, snakes: usize) -> Self {
+    pub fn empty(width: usize, height: usize) -> Self {
         let cells = vec![Cell::Empty; width * height];
         let rng = StdRng::from_entropy();
+        let apples_eaten = 0;
         Self {
             cells,
             rng,
             width,
             height,
-            snakes,
+            apples_eaten,
         }
     }
 
@@ -44,14 +45,8 @@ impl Board {
             BoardSize::Large => (24, 21),
         };
 
-        let snakes = match board_settings.players {
-            PlayerCount::One => 1,
-            PlayerCount::Two => 2,
-            PlayerCount::Three => 3,
-            PlayerCount::Four => 4,
-        };
-
-        let mut board = Self::empty(width, height, snakes);
+        let snakes = board_settings.players as usize;
+        let mut board = Self::empty(width, height);
 
         // add snakes
         if let PlayerCount::One = board_settings.players {
@@ -108,7 +103,7 @@ impl Board {
         };
         let apple_y = height as i32 / 2;
         for (x, y) in apple_pattern {
-            board[IVec2::new(apple_center + x, apple_y + y)] = Cell::Apple;
+            board[IVec2::new(apple_center + x, apple_y + y)] = Cell::Apple { natural: true };
         }
 
         board
@@ -142,7 +137,7 @@ impl Board {
             .choose(&mut self.rng);
 
         if let Some((i, _)) = empty {
-            self.cells[i] = Cell::Apple;
+            self.cells[i] = Cell::Apple { natural: true };
             Ok(())
         } else {
             Err(())
@@ -181,7 +176,9 @@ impl Board {
         ];
 
         let snakes = self.snakes().into_iter();
-        let heads: Vec<_> = snakes.map(|snake| snake.last().unwrap().0).collect();
+        let heads: Vec<_> = snakes
+            .filter_map(|snake| snake.last().map(|(pos, _)| *pos))
+            .collect();
 
         let mut spawnable = Vec::new();
         'outer: for (pos, cell) in self.cells() {
@@ -261,10 +258,27 @@ impl Board {
         Ok(())
     }
 
+    fn damage_snake(&mut self, snake_id: u8) -> Result<(), ()> {
+        let snakes = self.snakes();
+        for (pos, _) in snakes.get(snake_id as usize).ok_or(())? {
+            self[*pos] = Cell::Apple { natural: false };
+        }
+        Ok(())
+    }
+
     pub fn tick_board(&mut self, inputs: &[Option<Direction>]) -> Result<(), BoardError> {
-        let mut grow = vec![false; self.snakes];
+        let snakes = self.snakes();
+        let snake_count = snakes.len();
+
+        let mut grow = vec![false; snake_count];
+        let mut damage = vec![false; snake_count];
+        let mut spawn_apples = 0;
         let mut new_heads = Vec::new();
-        for (snake_id, snake) in self.snakes().into_iter().enumerate() {
+        for (snake_id, snake) in snakes.into_iter().enumerate() {
+            if snake.is_empty() {
+                continue;
+            }
+
             if snake.len() < 2 {
                 return Err(BoardError::SnakeTooShort {
                     snake: snake_id as u8,
@@ -295,19 +309,25 @@ impl Board {
 
             let new_head = head + dir.as_vec2();
             if !self.in_bounds(new_head) {
-                return Err(BoardError::GameOver);
+                damage[snake_id] = true;
+                continue;
             }
 
             match self[new_head] {
-                Cell::Apple => {
+                Cell::Apple { natural } => {
                     grow[snake_id] = true;
+                    if natural {
+                        spawn_apples += 1;
+                    }
                 }
                 Cell::Wall => {
-                    return Err(BoardError::GameOver);
+                    damage[snake_id] = true;
+                    continue;
                 }
                 Cell::Snake { id, part } => {
                     if id != snake_id as u8 || part != 0 {
-                        return Err(BoardError::GameOver);
+                        damage[snake_id] = true;
+                        continue;
                     }
                 }
                 _ => {}
@@ -319,6 +339,12 @@ impl Board {
             };
 
             new_heads.push((new_head, head_part));
+        }
+
+        for i in 0..snake_count {
+            if damage[i] {
+                self.damage_snake(i as u8).unwrap();
+            }
         }
 
         for (_, cell) in self.cells_mut() {
@@ -336,9 +362,11 @@ impl Board {
             }
         }
 
-        for i in 0..self.snakes {
-            if grow[i] {
-                self.spawn_apple().ok();
+        for _ in 0..spawn_apples {
+            self.spawn_apple().ok();
+            self.apples_eaten += 1;
+
+            if self.apples_eaten % 2 == 1 {
                 self.spawn_wall().ok();
             }
         }
@@ -373,7 +401,7 @@ impl Board {
             }
         }
         for i in 0..snakes.len() {
-            snakes[i].sort_by_key(|(_, part)| *part);
+            snakes[i].sort_unstable_by_key(|(_, part)| *part);
         }
         snakes
     }
@@ -386,8 +414,17 @@ impl Board {
         self.height
     }
 
-    pub fn snake_count(&self) -> usize {
-        self.snakes
+    /// Returns the number of living snakes. The snake ids can be larger than the number of players.
+    pub fn count_snakes(&self) -> usize {
+        let mut snake_ids = Vec::new();
+        for (_, cell) in self.cells() {
+            if let Cell::Snake { id, .. } = cell {
+                snake_ids.push(id);
+            }
+        }
+        snake_ids.sort_unstable();
+        snake_ids.dedup();
+        snake_ids.len()
     }
 }
 
@@ -426,7 +463,7 @@ impl std::fmt::Debug for Board {
                         3 => 'D',
                         _ => unreachable!(),
                     },
-                    Cell::Apple => 'o',
+                    Cell::Apple { .. } => 'o',
                 };
                 write!(f, "{}", c)?;
             }
@@ -445,17 +482,17 @@ pub enum BoardSize {
 
 #[derive(Reflect, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum AppleCount {
-    One,
-    Three,
-    Five,
+    One = 1,
+    Three = 3,
+    Five = 5,
 }
 
 #[derive(Reflect, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum PlayerCount {
-    One,
-    Two,
-    Three,
-    Four,
+    One = 1,
+    Two = 2,
+    Three = 3,
+    Four = 4,
 }
 
 #[derive(Reflect, Clone, Copy, Debug)]
@@ -483,8 +520,6 @@ pub enum BoardError {
     SnakeTooShort { snake: u8 },
     #[error("Head not attached to neck for snake {snake}")]
     HeadNotAttachedToNeck { snake: u8 },
-    #[error("Game over")]
-    GameOver,
 }
 
 #[derive(Error, Debug)]

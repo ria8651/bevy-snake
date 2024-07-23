@@ -76,7 +76,7 @@ fn main() {
         .insert_resource(GameTime::default())
         .init_state::<GameState>()
         .add_event::<ExplosionEv>()
-        .add_systems(Update, game_state)
+        .add_systems(Update, game_state.after(game::update_game))
         .add_systems(Update, settings_system.run_if(in_state(GameState::InGame)))
         .run();
 }
@@ -85,15 +85,17 @@ fn game_state(
     mut next_game_state: ResMut<NextState<GameState>>,
     game_state: Res<State<GameState>>,
     keys: Res<ButtonInput<KeyCode>>,
-    // settings: Res<Settings>,
+    settings: Res<Settings>,
+    board: Res<Board>,
 ) {
     match game_state.get() {
         GameState::Setup => next_game_state.set(GameState::Start),
         GameState::Start => next_game_state.set(GameState::InGame),
         GameState::InGame => {
-            // if snake_query.iter().count() <= (settings.snake_count != 1) as usize {
-            //     next_game_state.set(GameState::GameOver);
-            // }
+            let snakes = board.count_snakes();
+            if snakes <= (settings.board_settings.players as usize != 1) as usize {
+                next_game_state.set(GameState::GameOver);
+            }
         }
         GameState::GameOver => {
             if keys.just_pressed(KeyCode::Space) {

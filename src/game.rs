@@ -1,5 +1,5 @@
 use crate::{
-    board::{Board, BoardError, Direction},
+    board::{Board, Direction},
     web::{WebCommands, WebResources, WebUpdates},
     GameState, Settings,
 };
@@ -11,7 +11,7 @@ pub struct GamePlugin;
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(TickTimer(Timer::from_seconds(1.0, TimerMode::Repeating)))
-            .insert_resource(Board::empty(0, 0, 0))
+            .insert_resource(Board::empty(0, 0))
             .insert_resource(Points(vec![0; 4]))
             .insert_resource(SnakeInputs(vec![
                 SnakeInput {
@@ -160,14 +160,9 @@ pub fn update_game(
             .collect();
 
         if inputs.iter().any(|i| i.is_some()) || settings.do_game_tick {
-            match board.tick_board(&inputs) {
-                Ok(()) => {}
-                Err(BoardError::GameOver) => {
-                    next_game_state.set(GameState::GameOver);
-                }
-                Err(e) => {
-                    eprintln!("Error: {:?}", e);
-                }
+            if let Err(e) = board.tick_board(&inputs) {
+                warn!("Board tick error: {:?}", e);
+                next_game_state.set(GameState::GameOver);
             }
 
             web_resources
