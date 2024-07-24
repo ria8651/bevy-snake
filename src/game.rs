@@ -101,7 +101,7 @@ pub fn update_game(
     mut timer: ResMut<TickTimer>,
     mut board: ResMut<Board>,
     mut next_game_state: ResMut<NextState<GameState>>,
-    web_resources: Res<WebResources>,
+    mut web_resources: ResMut<WebResources>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     settings: Res<Settings>,
