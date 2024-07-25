@@ -69,6 +69,7 @@ fn start_web(web_commands: Sender<WebCommands>, web_updates: Sender<WebUpdates>)
                 .service(web::resource("/input").to(send_input))
                 .service(web::resource("/ws").to(snake_ws))
                 .app_data(Data::new(web_commands.clone()))
+                .app_data(Data::new(web_updates.clone()))
                 .app_data(Data::new(Mutex::new(web_updates.subscribe())))
                 .app_data(Data::new(Mutex::new(None::<Board>)))
         })
@@ -127,7 +128,7 @@ async fn send_input(
 async fn snake_ws(
     req: HttpRequest,
     stream: web::Payload,
-    web_updates: Data<Mutex<Receiver<WebUpdates>>>,
+    web_updates: Data<Sender<WebUpdates>>,
     web_commands: Data<Sender<WebCommands>>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let (res, session, msg_stream) = actix_ws::handle(&req, stream)?;
@@ -136,8 +137,8 @@ async fn snake_ws(
     actix_web::rt::spawn(snake_ws_handler(
         session,
         msg_stream,
-        web_updates,
-        web_commands,
+        web_updates.subscribe(),
+        web_commands.as_ref().clone(),
     ));
 
     Ok(res)
@@ -146,8 +147,8 @@ async fn snake_ws(
 pub async fn snake_ws_handler(
     mut session: actix_ws::Session,
     mut msg_stream: actix_ws::MessageStream,
-    _web_updates: Data<Mutex<Receiver<WebUpdates>>>,
-    _web_commands: Data<Sender<WebCommands>>,
+    mut web_updates: Receiver<WebUpdates>,
+    web_commands: Sender<WebCommands>,
 ) {
     info!("web socket connected");
 
@@ -157,43 +158,69 @@ pub async fn snake_ws_handler(
     let reason = loop {
         // create "next client timeout check" future
         let tick = interval.tick();
+        let board_update = web_updates.recv();
 
         tokio::select! {
+            // received a board update from the game
+            update = board_update => {
+                match update {
+                    Ok(WebUpdates::UpdateBoard { board }) => {
+                        if let Err(e) = session.text(serde_json::to_string(&board).unwrap()).await {
+                            error!("{}", e);
+                            break None;
+                        }
+                    }
+
+                    Err(err) => {
+                        error!("{}", err);
+                        break None;
+                    }
+                }
+            }
+
             // received message from WebSocket client
             msg = msg_stream.next() => {
                 match msg {
-                    Some(Ok(msg)) => {
-                        info!("web socket msg: {msg:?}");
+                    Some(Ok(msg)) => match msg {
+                        Message::Text(text) => {
+                            let input = match serde_json::from_str::<Input>(&text) {
+                                Ok(input) => input,
+                                Err(err) => {
+                                    session.text(format!("invalid input: {}", err)).await.unwrap();
+                                    error!("{}", err);
+                                    break None;
+                                }
+                            };
 
-                        match msg {
-                            Message::Text(text) => {
-                                session.text(text).await.unwrap();
+                            if let Err(e) = web_commands.send(WebCommands::SendInput { direction: input.direction }) {
+                                error!("{}", e);
+                                break None;
                             }
+                        }
 
-                            Message::Binary(bin) => {
-                                session.binary(bin).await.unwrap();
-                            }
+                        Message::Binary(_) => {
+                            session.text("i dont want your binary data").await.unwrap();
+                        }
 
-                            Message::Close(reason) => {
-                                break reason;
-                            }
+                        Message::Close(reason) => {
+                            break reason;
+                        }
 
-                            Message::Ping(bytes) => {
-                                last_heartbeat = Instant::now();
-                                session.pong(&bytes).await.ok();
-                            }
+                        Message::Ping(bytes) => {
+                            last_heartbeat = Instant::now();
+                            session.pong(&bytes).await.ok();
+                        }
 
-                            Message::Pong(_) => {
-                                last_heartbeat = Instant::now();
-                            }
+                        Message::Pong(_) => {
+                            last_heartbeat = Instant::now();
+                        }
 
-                            Message::Continuation(_) => {
-                                warn!("no support for continuation frames");
-                            }
+                        Message::Continuation(_) => {
+                            warn!("no support for continuation frames");
+                        }
 
-                            // no-op; ignore
-                            Message::Nop => {}
-                        };
+                        // no-op; ignore
+                        Message::Nop => {}
                     }
 
                     Some(Err(err)) => {
