@@ -71,9 +71,13 @@ struct SnakePart;
 #[derive(Component)]
 struct DebugTile;
 
+#[derive(Component)]
+struct Apple;
+
 fn draw_board(
     mut commands: Commands,
     mut camera_query: Query<&mut OrthographicProjection, With<MainCamera>>,
+    mut apple_query: Query<&mut Transform, With<Apple>>,
     mut board_size: Local<(usize, usize)>,
     mut apples: Local<HashMap<IVec2, Entity>>,
     mut walls: Local<HashMap<IVec2, Entity>>,
@@ -84,6 +88,7 @@ fn draw_board(
     debug_tiles: Query<Entity, With<DebugTile>>,
     render_resources: Res<RenderResources>,
     tick_timer: Res<TickTimer>,
+    time: Res<Time>,
     settings: Res<Settings>,
 ) {
     let board_pos = |pos: Vec2, depth: f32| -> Transform {
@@ -151,7 +156,7 @@ fn draw_board(
                     transform: board_pos(pos.as_vec2(), 10.0).with_scale(Vec3::splat(1.0 / 512.0)),
                     ..default()
                 };
-                apples.insert(pos, commands.spawn(bundle).id());
+                apples.insert(pos, commands.spawn((bundle, Apple)).id());
             }
             _ => {
                 if let Some(entity) = apples.remove(&pos) {
@@ -159,6 +164,11 @@ fn draw_board(
                 }
             }
         }
+    }
+
+    for mut apple in apple_query.iter_mut() {
+        let scale = (10.0 * time.elapsed_seconds()).sin() * 0.1 + 1.0;
+        apple.scale = Vec3::splat(1.0 / 512.0) * scale;
     }
 
     // walls

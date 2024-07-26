@@ -266,10 +266,11 @@ impl Board {
         Ok(())
     }
 
-    pub fn tick_board(&mut self, inputs: &[Option<Direction>]) -> Result<(), BoardError> {
+    pub fn tick_board(&mut self, inputs: &[Option<Direction>]) -> Result<Vec<BoardEvent>, BoardError> {
         let snakes = self.snakes();
         let snake_count = snakes.len();
 
+        let mut board_events = Vec::new();
         let mut grow = vec![false; snake_count];
         let mut damage = vec![false; snake_count];
         let mut spawn_apples = 0;
@@ -344,7 +345,12 @@ impl Board {
         for i in 0..snake_count {
             if damage[i] {
                 self.damage_snake(i as u8).unwrap();
+                board_events.push(BoardEvent::SnakeDamaged { snake: i as u8 });
             }
+        }
+
+        if self.count_snakes() == 0 {
+            board_events.push(BoardEvent::GameOver);
         }
 
         for (_, cell) in self.cells_mut() {
@@ -371,7 +377,7 @@ impl Board {
             }
         }
 
-        Ok(())
+        Ok(board_events)
     }
 
     pub fn cells(&self) -> impl Iterator<Item = (IVec2, Cell)> + '_ {
@@ -510,6 +516,12 @@ impl Default for BoardSettings {
             players: PlayerCount::One,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum BoardEvent {
+    GameOver,
+    SnakeDamaged { snake: u8 },
 }
 
 #[derive(Error, Debug)]

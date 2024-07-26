@@ -1,5 +1,5 @@
 use crate::{
-    board::{Board, Direction},
+    board::{Board, BoardEvent, Direction},
     web::{WebCommands, WebResources, WebUpdates},
     GameState, Settings,
 };
@@ -102,6 +102,7 @@ pub fn update_game(
     mut board: ResMut<Board>,
     mut next_game_state: ResMut<NextState<GameState>>,
     mut web_resources: ResMut<WebResources>,
+    mut points: ResMut<Points>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     settings: Res<Settings>,
@@ -159,10 +160,29 @@ pub fn update_game(
             })
             .collect();
 
-        if inputs.iter().any(|i| i.is_some()) || settings.do_game_tick {
-            if let Err(e) = board.tick_board(&inputs) {
-                warn!("Board tick error: {:?}", e);
-                next_game_state.set(GameState::GameOver);
+        let snakes = board.snakes();
+        if inputs[0..snakes.len()].iter().any(|i| i.is_some()) || settings.do_game_tick {
+            match board.tick_board(&inputs) {
+                Ok(events) => {
+                    for event in events {
+                        match event {
+                            BoardEvent::GameOver => {
+                                next_game_state.set(GameState::GameOver);
+                            }
+                            BoardEvent::SnakeDamaged { .. } => {
+                                for (snake_id, snake) in board.snakes().into_iter().enumerate() {
+                                    if snake.len() > 0 {
+                                        points[snake_id as usize] += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Board tick error: {:?}", e);
+                    next_game_state.set(GameState::GameOver);
+                }
             }
 
             web_resources
