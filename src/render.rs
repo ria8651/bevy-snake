@@ -205,46 +205,42 @@ fn draw_board(
     let mut interpolation = tick_timer.elapsed_secs() / tick_timer.duration().as_secs_f32();
     interpolation *= settings.interpolation as u32 as f32;
 
-    for (snake_id, snake) in board.snakes().into_iter().enumerate() {
-        if snake.len() < 2 {
-            continue;
-        }
+    for (snake_id, snake) in board.snakes().into_iter() {
+        let mut parts: Vec<Vec2> = snake.parts.iter().map(|pos| pos.as_vec2()).collect();
 
-        let mut snake: Vec<_> = snake.iter().map(|(pos, _)| pos.as_vec2()).collect();
-
-        let n = snake.len() - 2; // neck
-        let h = snake.len() - 1; // head
         let next_input = input_queues
-            .get(snake_id)
+            .get(snake_id as usize)
             .and_then(|q| q.input_queue.get(0))
-            .map(|d| d.as_vec2().as_vec2())
             .filter(|_| interpolation > 0.5)
-            .unwrap_or(snake[h] - snake[n]);
+            .unwrap_or(&snake.dir)
+            .as_vec2()
+            .as_vec2();
 
+        let h = parts.len() - 1; // head
         if interpolation > 0.5 {
-            snake.insert(h, snake[h]);
+            parts.insert(h, parts[h]);
         }
 
-        let h = snake.len() - 1;
-        snake[0] = snake[0] + (snake[1] - snake[0]) * interpolation;
-        snake[h] = snake[h] + next_input * (interpolation - 0.5);
-        // snake[h] = snake[n] + (snake[h] - snake[n]) * interpolation;
+        let h = parts.len() - 1;
+        parts[0] = parts[0] + (parts[1] - parts[0]) * interpolation;
+        parts[h] = parts[h] + next_input * (interpolation - 0.5);
+        // parts[h] = parts[n] + (parts[h] - parts[n]) * interpolation;
 
-        for i in 0..snake.len() {
+        for i in 0..parts.len() {
             commands.spawn((
                 MaterialMesh2dBundle {
                     mesh: Mesh2dHandle(render_resources.circle_mesh.clone()),
-                    material: render_resources.snake_materials[snake_id].clone(),
-                    transform: board_pos(snake[i], 0.0),
+                    material: render_resources.snake_materials[snake_id as usize].clone(),
+                    transform: board_pos(parts[i], 0.0),
                     ..default()
                 },
                 SnakePart,
             ));
         }
 
-        for i in 1..snake.len() {
-            let pos = snake[i];
-            let prev = snake[i - 1];
+        for i in 1..parts.len() {
+            let pos = parts[i];
+            let prev = parts[i - 1];
             let mid_pos = (pos + prev) / 2.0;
             let scale = (pos - prev).length();
 
@@ -252,7 +248,7 @@ fn draw_board(
             commands.spawn((
                 MaterialMesh2dBundle {
                     mesh: Mesh2dHandle(render_resources.square_mesh.clone()),
-                    material: render_resources.snake_materials[snake_id].clone(),
+                    material: render_resources.snake_materials[snake_id as usize].clone(),
                     transform: capsule_pos
                         .looking_at(
                             capsule_pos.translation + Vec3::Z,

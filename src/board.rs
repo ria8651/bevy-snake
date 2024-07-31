@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use bevy::prelude::*;
+use bevy::{prelude::*, utils::HashMap};
 use rand::{rngs::StdRng, seq::IteratorRandom, SeedableRng};
 use serde::{Deserialize, Serialize};
 use std::ops::{Index, IndexMut};
@@ -175,10 +175,7 @@ impl Board {
             IVec2::new(-1, 1),
         ];
 
-        let snakes = self.snakes().into_iter();
-        let heads: Vec<_> = snakes
-            .filter_map(|snake| snake.last().map(|(pos, _)| *pos))
-            .collect();
+        let heads: Vec<_> = self.snakes().values().map(|snake| snake.head).collect();
 
         let mut spawnable = Vec::new();
         'outer: for (pos, cell) in self.cells() {
@@ -260,13 +257,17 @@ impl Board {
 
     fn damage_snake(&mut self, snake_id: u8) -> Result<(), ()> {
         let snakes = self.snakes();
-        for (pos, _) in snakes.get(snake_id as usize).ok_or(())? {
+        let snake = snakes.get(&snake_id).ok_or(())?;
+        for pos in snake.parts.iter() {
             self[*pos] = Cell::Apple { natural: false };
         }
         Ok(())
     }
 
-    pub fn tick_board(&mut self, inputs: &[Option<Direction>]) -> Result<Vec<BoardEvent>, BoardError> {
+    pub fn tick_board(
+        &mut self,
+        inputs: &[Option<Direction>],
+    ) -> Result<Vec<BoardEvent>, BoardError> {
         let snakes = self.snakes();
         let snake_count = snakes.len();
 
@@ -274,60 +275,40 @@ impl Board {
         let mut grow = vec![false; snake_count];
         let mut damage = vec![false; snake_count];
         let mut spawn_apples = 0;
-        let mut new_heads = Vec::new();
-        for (snake_id, snake) in snakes.into_iter().enumerate() {
-            if snake.is_empty() {
-                continue;
-            }
-
-            if snake.len() < 2 {
-                return Err(BoardError::SnakeTooShort {
-                    snake: snake_id as u8,
-                });
-            }
-
-            let (head, head_part) = snake[snake.len() - 1];
-            let (neck, _) = snake[snake.len() - 2];
-
-            let input = *inputs.get(snake_id).ok_or(BoardError::NotEnoughInputs)?;
-            let current_dir = Direction::try_from(head - neck).map_err(|_| {
-                BoardError::HeadNotAttachedToNeck {
-                    snake: snake_id as u8,
-                }
-            })?;
+        for (snake_id, snake) in snakes.into_iter() {
+            let input = *inputs
+                .get(snake_id as usize)
+                .ok_or(BoardError::NotEnoughInputs)?;
 
             // dont allow going back
             let dir = match input {
-                Some(d) => {
-                    if d != current_dir.opposite() {
-                        d
-                    } else {
-                        current_dir
-                    }
-                }
-                None => current_dir,
+                Some(d) if d != snake.dir.opposite() => d,
+                _ => snake.dir,
             };
 
-            let new_head = head + dir.as_vec2();
+            let new_head = snake.head + dir.as_vec2();
             if !self.in_bounds(new_head) {
-                damage[snake_id] = true;
+                damage[snake_id as usize] = true;
                 continue;
             }
 
             match self[new_head] {
                 Cell::Apple { natural } => {
-                    grow[snake_id] = true;
+                    grow[snake_id as usize] = true;
                     if natural {
                         spawn_apples += 1;
                     }
+                    board_events.push(BoardEvent::AppleEaten {
+                        snake: snake_id as u8,
+                    });
                 }
                 Cell::Wall => {
-                    damage[snake_id] = true;
+                    damage[snake_id as usize] = true;
                     continue;
                 }
                 Cell::Snake { id, part } => {
                     if id != snake_id as u8 || part != 0 {
-                        damage[snake_id] = true;
+                        damage[snake_id as usize] = true;
                         continue;
                     }
                 }
@@ -336,10 +317,8 @@ impl Board {
 
             self[new_head] = Cell::Snake {
                 id: snake_id as u8,
-                part: head_part + 1,
+                part: snake.parts.len() as u8,
             };
-
-            new_heads.push((new_head, head_part));
         }
 
         for i in 0..snake_count {
@@ -396,18 +375,47 @@ impl Board {
         })
     }
 
-    pub fn snakes(&self) -> Vec<Vec<(IVec2, u8)>> {
-        let mut snakes = Vec::new();
+    pub fn snakes(&self) -> HashMap<u8, Snake> {
+        let mut snake_parts = HashMap::new();
         for (pos, cell) in self.cells() {
             if let Cell::Snake { id, part } = cell {
-                while snakes.len() <= id as usize {
-                    snakes.push(Vec::new());
-                }
-                snakes[id as usize].push((pos, part));
+                snake_parts
+                    .entry(id)
+                    .or_insert_with(Vec::new)
+                    .push((pos, part));
             }
         }
-        for i in 0..snakes.len() {
-            snakes[i].sort_unstable_by_key(|(_, part)| *part);
+        for parts in snake_parts.values_mut() {
+            parts.sort_unstable_by_key(|(_, id)| *id);
+        }
+
+        let mut snakes = HashMap::new();
+        for (snake_id, parts_ids) in snake_parts.into_iter() {
+            let mut parts = Vec::new();
+            for i in 0..parts_ids.len() {
+                let (part, id) = parts_ids[i];
+                assert_eq!(id, i as u8);
+                parts.push(part);
+            }
+
+            assert!(parts.len() >= 2);
+
+            let head = parts[parts.len() - 1];
+            let neck = parts[parts.len() - 2];
+            let hips = parts[1];
+            let tail = parts[0];
+            let dir = Direction::try_from(head - neck).unwrap();
+            snakes.insert(
+                snake_id,
+                Snake {
+                    parts,
+                    dir,
+                    head,
+                    neck,
+                    hips,
+                    tail,
+                },
+            );
         }
         snakes
     }
@@ -479,6 +487,16 @@ impl std::fmt::Debug for Board {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct Snake {
+    pub parts: Vec<IVec2>,
+    pub dir: Direction,
+    pub head: IVec2,
+    pub neck: IVec2,
+    pub hips: IVec2,
+    pub tail: IVec2,
+}
+
 #[derive(Reflect, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum BoardSize {
     Small,
@@ -518,9 +536,10 @@ impl Default for BoardSettings {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BoardEvent {
     GameOver,
+    AppleEaten { snake: u8 },
     SnakeDamaged { snake: u8 },
 }
 

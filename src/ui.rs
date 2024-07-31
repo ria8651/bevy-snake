@@ -28,8 +28,6 @@ fn ui_system(
     board: Res<Board>,
 ) {
     egui::Window::new("Settings").show(contexts.ctx_mut(), |ui| {
-        ui.label(format!("tps: {:.1}", settings.tps));
-
         // scores
         ui.horizontal(|ui| {
             let point_colours = vec![
@@ -40,8 +38,8 @@ fn ui_system(
             ];
 
             if let PlayerCount::One = settings.board_settings.players {
-                let score = if let Some(snake) = board.snakes().iter().next() {
-                    let score = snake.len() - 4;
+                let score = if let Some(snake) = board.snakes().values().next() {
+                    let score = snake.parts.len() - 4;
                     *last_score = score;
                     score
                 } else {
@@ -95,6 +93,7 @@ fn ui_system(
         settings.tps_ramp = settings.tps == 0.0;
         settings.do_game_tick = settings.tps != -1.0;
 
+        ui.checkbox(&mut settings.ai, "AI");
         ui.checkbox(&mut settings.walls, "Walls");
         ui.checkbox(&mut settings.walls_debug, "Walls debug");
 

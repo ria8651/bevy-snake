@@ -170,12 +170,11 @@ pub fn update_game(
                                 next_game_state.set(GameState::GameOver);
                             }
                             BoardEvent::SnakeDamaged { .. } => {
-                                for (snake_id, snake) in board.snakes().into_iter().enumerate() {
-                                    if snake.len() > 0 {
-                                        points[snake_id as usize] += 1;
-                                    }
+                                for (snake_id, _) in board.snakes().into_iter().enumerate() {
+                                    points[snake_id as usize] += 1;
                                 }
                             }
+                            _ => {}
                         }
                     }
                 }

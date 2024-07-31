@@ -1,7 +1,8 @@
 use bevy::prelude::*;
-use board::{AppleCount, Board, BoardSettings, BoardSize, PlayerCount};
+use board::{Board, BoardSettings};
 use effects::ExplosionEv;
 
+mod ai;
 mod board;
 mod effects;
 mod game;
@@ -32,6 +33,7 @@ pub struct Settings {
     pub tps: f32,
     pub tps_ramp: bool,
     pub board_settings: BoardSettings,
+    pub ai: bool,
     pub walls: bool,
     pub walls_debug: bool,
 }
@@ -53,11 +55,11 @@ fn main() {
                 }),
                 ..default()
             }),
-            // effects::EffectsPlugin,
             ui::UiPlugin,
             game::GamePlugin,
             render::BoardRenderPlugin,
             web::WebPlugin,
+            ai::AIPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.1, 0.1, 0.1)))
         .insert_resource(Settings {
@@ -65,11 +67,8 @@ fn main() {
             do_game_tick: true,
             tps: 7.5,
             tps_ramp: false,
-            board_settings: BoardSettings {
-                board_size: BoardSize::Medium,
-                apples: AppleCount::One,
-                players: PlayerCount::One,
-            },
+            board_settings: BoardSettings::default(),
+            ai: true,
             walls: false,
             walls_debug: false,
         })
