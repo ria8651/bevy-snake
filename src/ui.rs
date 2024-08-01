@@ -94,6 +94,7 @@ fn ui_system(
         settings.do_game_tick = settings.tps != -1.0;
 
         ui.checkbox(&mut settings.ai, "AI");
+        ui.checkbox(&mut settings.gizmos, "Gizmos");
         ui.checkbox(&mut settings.walls, "Walls");
         ui.checkbox(&mut settings.walls_debug, "Walls debug");
 

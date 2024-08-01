@@ -34,6 +34,7 @@ pub struct Settings {
     pub tps_ramp: bool,
     pub board_settings: BoardSettings,
     pub ai: bool,
+    pub gizmos: bool,
     pub walls: bool,
     pub walls_debug: bool,
 }
@@ -69,6 +70,7 @@ fn main() {
             tps_ramp: false,
             board_settings: BoardSettings::default(),
             ai: true,
+            gizmos: false,
             walls: false,
             walls_debug: false,
         })

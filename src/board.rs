@@ -10,7 +10,7 @@ use thiserror::Error;
 pub enum Cell {
     Empty,
     Wall,
-    Snake { id: u8, part: u8 },
+    Snake { id: u8, part: u16 },
     Apple { natural: bool }, // natural apples respawn
 }
 
@@ -60,7 +60,7 @@ impl Board {
             for i in 0..4 {
                 board[IVec2::new(offset + i, y)] = Cell::Snake {
                     id: 0,
-                    part: i as u8,
+                    part: i as u16,
                 };
             }
         } else {
@@ -80,7 +80,7 @@ impl Board {
                     }
                     board[IVec2::new(x, y)] = Cell::Snake {
                         id: snake_id as u8,
-                        part: i as u8,
+                        part: i as u16,
                     };
                 }
             }
@@ -317,7 +317,7 @@ impl Board {
 
             self[new_head] = Cell::Snake {
                 id: snake_id as u8,
-                part: snake.parts.len() as u8,
+                part: snake.parts.len() as u16,
             };
         }
 
@@ -394,7 +394,7 @@ impl Board {
             let mut parts = Vec::new();
             for i in 0..parts_ids.len() {
                 let (part, id) = parts_ids[i];
-                assert_eq!(id, i as u8);
+                assert_eq!(id, i as u16);
                 parts.push(part);
             }
 
