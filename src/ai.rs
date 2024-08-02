@@ -5,10 +5,7 @@ use crate::{
 };
 use bevy::prelude::*;
 use rand::prelude::SliceRandom;
-use std::{
-    collections::{HashSet, VecDeque},
-    ops::{Index, IndexMut},
-};
+use std::collections::{HashSet, VecDeque};
 
 pub struct AIPlugin;
 
@@ -92,15 +89,92 @@ impl SnakeAI for TreeSearch {
         let snakes = board.snakes();
         let snake = snakes.get(&0).ok_or(())?;
 
-        let scores = self.recursive_eval(board.clone(), 0, 0.0, snake.dir, gizmos);
-        
-        let mut dir_scores: Vec<_> = scores.dir_values().collect();
-        dir_scores.shuffle(&mut rand::thread_rng());
+        struct BoardEval {
+            board: Board,
+            score: f32,
+            depth: usize,
+            history: Vec<Direction>,
+        }
 
-        let (dir, _score) = dir_scores
+        let mut queue = VecDeque::from([BoardEval {
+            board: board.clone(),
+            score: 0.0,
+            depth: 0,
+            history: Vec::new(),
+        }]);
+
+        let mut final_boards = Vec::new();
+
+        while let Some(board_eval) = queue.pop_front() {
+            let BoardEval {
+                board,
+                score,
+                depth,
+                history,
+            } = board_eval;
+
+            let snakes = board.snakes();
+            let snake = snakes.get(&0).unwrap();
+
+            for dir in Direction::ALL {
+                if dir == snake.dir.opposite() {
+                    continue;
+                }
+
+                let mut history = history.clone();
+                history.push(dir);
+
+                let mut board = board.clone();
+                let events = board.tick_board(&[Some(dir)]).unwrap();
+
+                let mut score = score;
+                let mut game_over = false;
+                for event in events {
+                    match event {
+                        BoardEvent::AppleEaten { snake } => {
+                            if snake == 0 {
+                                score += 1.0 / (depth as f32 + 1.0);
+                            }
+                        }
+                        BoardEvent::GameOver => {
+                            game_over = true;
+                        }
+                        _ => {}
+                    }
+                }
+
+                let board_eval = BoardEval {
+                    board,
+                    score,
+                    depth: depth + 1,
+                    history,
+                };
+
+                if game_over || depth == self.max_depth {
+                    final_boards.push(board_eval);
+                } else {
+                    queue.push_back(board_eval);
+                }
+            }
+        }
+
+        for board in final_boards.iter_mut() {
+            board.score = self.eval_board(&board.board, board.score, gizmos)?;
+        }
+
+        let max_board = final_boards
             .into_iter()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-            .unwrap();
+            .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap())
+            .ok_or(())?;
+
+        let dir = *max_board.history.first().unwrap();
+        let mut head = snake.head;
+        for dir in max_board.history {
+            gizmos
+                .lines
+                .push((head, head + dir.as_vec2(), Color::srgb(0.0, 1.0, 0.0)));
+            head += dir.as_vec2();
+        }
 
         Ok(dir)
     }
@@ -109,65 +183,18 @@ impl SnakeAI for TreeSearch {
 const BAD_SCORE: f32 = -1000.0;
 
 impl TreeSearch {
-    fn recursive_eval(
-        &self,
-        board: Board,
-        depth: usize,
-        apple_score: f32,
-        last: Direction,
-        gizmos: &mut AIGizmos,
-    ) -> Dir<f32> {
-        let head = board.snakes().get(&0).unwrap().head;
-
-        let mut scores = Dir::all(BAD_SCORE);
-        for dir in Direction::ALL {
-            if dir == last.opposite() {
-                continue;
-            }
-
-            let mut apple_score = apple_score;
-            let mut board = board.clone();
-            let events = board.tick_board(&[Some(dir)]).unwrap();
-            if events.contains(&BoardEvent::GameOver) {
-                scores[dir] = BAD_SCORE + depth as f32; // survive as long as possible when faced with death
-                continue;
-            }
-            for event in events {
-                match event {
-                    BoardEvent::AppleEaten { snake } => {
-                        if snake == 0 {
-                            apple_score += 1.0 / (depth as f32 + 1.0);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            if depth == self.max_depth {
-                let eval = self
-                    .eval_board(&board, apple_score, gizmos)
-                    .unwrap_or(BAD_SCORE);
-                scores[dir] = eval;
-            } else {
-                let child_scores = self.recursive_eval(board, depth + 1, apple_score, dir, gizmos);
-                let (_dir, score) = child_scores.max();
-                scores[dir] = score;
-            }
-
-            let col = Color::srgb(scores[dir] as f32, 0.0, 0.0);
-            gizmos.lines.push((head, head + dir.as_vec2(), col));
-        }
-
-        scores
-    }
-
     fn eval_board(
         &self,
         board: &Board,
         apple_score: f32,
         gizmos: &mut AIGizmos,
     ) -> Result<f32, ()> {
-        let (_, snake) = board.snakes().into_iter().next().ok_or(())?;
+        let snakes = board.snakes();
+        if snakes.len() == 0 {
+            return Ok(BAD_SCORE + apple_score);
+        }
+
+        let (_, snake) = snakes.into_iter().next().unwrap();
 
         let max_search = snake.parts.len() * 2;
         let mut queue = VecDeque::from([snake.head]);
@@ -207,46 +234,6 @@ impl TreeSearch {
 
         // return Ok(apple_score);
         return Ok(flood_fill + apple_score * 2.0);
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Dir<T: Copy>([T; 4]);
-
-impl<T: Copy> Dir<T> {
-    fn all(value: T) -> Self {
-        Self([value; 4])
-    }
-
-    fn values(&self) -> impl Iterator<Item = T> + '_ {
-        self.0.iter().copied()
-    }
-
-    fn dir_values(&self) -> impl Iterator<Item = (Direction, T)> + '_ {
-        Direction::ALL.into_iter().zip(self.values())
-    }
-
-    fn max(&self) -> (Direction, T)
-    where
-        T: PartialOrd,
-    {
-        self.dir_values()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-            .unwrap()
-    }
-}
-
-impl<T: Copy> Index<Direction> for Dir<T> {
-    type Output = T;
-
-    fn index(&self, index: Direction) -> &Self::Output {
-        &self.0[index as usize]
-    }
-}
-
-impl<T: Copy> IndexMut<Direction> for Dir<T> {
-    fn index_mut(&mut self, index: Direction) -> &mut Self::Output {
-        &mut self.0[index as usize]
     }
 }
 
