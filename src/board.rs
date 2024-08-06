@@ -1,6 +1,9 @@
 #![allow(dead_code)]
 
-use bevy::{prelude::*, utils::HashMap};
+use bevy::{
+    prelude::*,
+    utils::{hashbrown::HashSet, HashMap},
+};
 use rand::{rngs::StdRng, seq::IteratorRandom, SeedableRng};
 use serde::{Deserialize, Serialize};
 use std::ops::{Index, IndexMut};
@@ -18,7 +21,7 @@ pub enum Cell {
 pub struct Board {
     cells: Vec<Cell>,
     #[serde(skip)]
-    rng: StdRng,
+    pub rng: StdRng,
     width: usize,
     height: usize,
     apples_eaten: usize,
@@ -255,27 +258,15 @@ impl Board {
         Ok(())
     }
 
-    fn damage_snake(&mut self, snake_id: u8) -> Result<(), ()> {
-        let snakes = self.snakes();
-        let snake = snakes.get(&snake_id).ok_or(())?;
-        for pos in snake.parts.iter() {
-            self[*pos] = Cell::Apple { natural: false };
-        }
-        Ok(())
-    }
-
     pub fn tick_board(
         &mut self,
         inputs: &[Option<Direction>],
     ) -> Result<Vec<BoardEvent>, BoardError> {
-        let snakes = self.snakes();
-        let snake_count = snakes.len();
-
         let mut board_events = Vec::new();
-        let mut grow = vec![false; snake_count];
-        let mut damage = vec![false; snake_count];
+        let mut grow = HashSet::new();
+        let mut damage = HashSet::new();
         let mut spawn_apples = 0;
-        for (snake_id, snake) in snakes.into_iter() {
+        for (snake_id, snake) in self.snakes().into_iter() {
             let input = *inputs
                 .get(snake_id as usize)
                 .ok_or(BoardError::NotEnoughInputs)?;
@@ -288,13 +279,13 @@ impl Board {
 
             let new_head = snake.head + dir.as_vec2();
             if !self.in_bounds(new_head) {
-                damage[snake_id as usize] = true;
+                damage.insert(snake_id);
                 continue;
             }
 
             match self[new_head] {
                 Cell::Apple { natural } => {
-                    grow[snake_id as usize] = true;
+                    grow.insert(snake_id);
                     if natural {
                         spawn_apples += 1;
                     }
@@ -303,16 +294,16 @@ impl Board {
                     });
                 }
                 Cell::Wall => {
-                    damage[snake_id as usize] = true;
+                    damage.insert(snake_id);
                     continue;
                 }
                 Cell::Snake { id, part } => {
                     if id != snake_id as u8 || part != 0 {
-                        damage[snake_id as usize] = true;
+                        damage.insert(snake_id);
                         continue;
                     }
                 }
-                _ => {}
+                Cell::Empty => {}
             }
 
             self[new_head] = Cell::Snake {
@@ -321,11 +312,22 @@ impl Board {
             };
         }
 
-        for i in 0..snake_count {
-            if damage[i] {
-                self.damage_snake(i as u8).unwrap();
-                board_events.push(BoardEvent::SnakeDamaged { snake: i as u8 });
+        for snake_id in damage.into_iter() {
+            let mut parts = Vec::new();
+            for (pos, cell) in self.cells() {
+                if let Cell::Snake { id, .. } = cell {
+                    if id == snake_id as u8 {
+                        parts.push(pos);
+                    }
+                }
             }
+            for pos in parts {
+                self[pos] = Cell::Apple { natural: false };
+            }
+
+            board_events.push(BoardEvent::SnakeDamaged {
+                snake: snake_id as u8,
+            });
         }
 
         if self.count_snakes() == 0 {
@@ -334,7 +336,7 @@ impl Board {
 
         for (_, cell) in self.cells_mut() {
             if let Cell::Snake { id, part } = cell {
-                if !grow[*id as usize] {
+                if !grow.contains(id) {
                     if *part == 0 {
                         *cell = Cell::Empty;
                     } else {
@@ -394,6 +396,13 @@ impl Board {
             let mut parts = Vec::new();
             for i in 0..parts_ids.len() {
                 let (part, id) = parts_ids[i];
+                if id != i as u16 {
+                    error!(
+                        "board: Snake {} has missing part {}. \n{:?}",
+                        snake_id, i, self
+                    );
+                    error!("Snake parts: {:?}", parts_ids);
+                }
                 assert_eq!(id, i as u16);
                 parts.push(part);
             }
@@ -464,20 +473,27 @@ impl IndexMut<IVec2> for Board {
 
 impl std::fmt::Debug for Board {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for y in 0..self.height {
+        for y in (0..self.height).rev() {
             for x in 0..self.width {
                 let cell = self[IVec2::new(x as i32, y as i32)];
                 let c = match cell {
-                    Cell::Empty => ' ',
-                    Cell::Wall => '#',
-                    Cell::Snake { id, .. } => match id {
-                        0 => 'A',
-                        1 => 'B',
-                        2 => 'C',
-                        3 => 'D',
-                        _ => unreachable!(),
-                    },
-                    Cell::Apple { .. } => 'o',
+                    Cell::Empty => " ".to_string(),
+                    Cell::Wall => "#".to_string(),
+                    Cell::Snake { id, part } => {
+                        let c = part.to_string().chars().next().unwrap();
+
+                        use colored::Colorize;
+                        format!(
+                            "{}",
+                            c.to_string().color(match id {
+                                0 => "green",
+                                1 => "blue",
+                                2 => "red",
+                                _ => "white",
+                            })
+                        )
+                    }
+                    Cell::Apple { .. } => "o".to_string(),
                 };
                 write!(f, "{}", c)?;
             }

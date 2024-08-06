@@ -4,8 +4,11 @@ use crate::{
     Settings,
 };
 use bevy::prelude::*;
-use rand::prelude::SliceRandom;
-use std::collections::{HashSet, VecDeque};
+use rand::{prelude::SliceRandom, rngs::StdRng, SeedableRng};
+use std::{
+    collections::{HashSet, VecDeque},
+    time::Instant,
+};
 
 pub struct AIPlugin;
 
@@ -25,7 +28,7 @@ fn ai_system(
 ) {
     if tick_timer.just_finished() || !settings.do_game_tick {
         // let ai = RandomWalk;
-        let ai = TreeSearch { max_depth: 7 };
+        let ai = TreeSearch { max_depth: 70 };
 
         let mut new_ai_gizmos = AIGizmos::default();
 
@@ -105,6 +108,8 @@ impl SnakeAI for TreeSearch {
 
         let mut final_boards = Vec::new();
 
+        let mut rng = rand::thread_rng();
+        let start_time = Instant::now();
         while let Some(board_eval) = queue.pop_front() {
             let BoardEval {
                 board,
@@ -114,7 +119,10 @@ impl SnakeAI for TreeSearch {
             } = board_eval;
 
             let snakes = board.snakes();
-            let snake = snakes.get(&0).unwrap();
+            let snake = match snakes.get(&0) {
+                Some(snake) => snake,
+                None => continue,
+            };
 
             for dir in Direction::ALL {
                 if dir == snake.dir.opposite() {
@@ -125,7 +133,8 @@ impl SnakeAI for TreeSearch {
                 history.push(dir);
 
                 let mut board = board.clone();
-                let events = board.tick_board(&[Some(dir)]).unwrap();
+                board.rng = StdRng::from_rng(&mut rng).unwrap();
+                let events = board.tick_board(&[Some(dir), None, None, None]).unwrap();
 
                 let mut score = score;
                 let mut game_over = false;
@@ -156,10 +165,25 @@ impl SnakeAI for TreeSearch {
                     queue.push_back(board_eval);
                 }
             }
+
+            if start_time.elapsed().as_millis() > 5 {
+                final_boards.extend(queue);
+                break;
+            }
         }
 
         for board in final_boards.iter_mut() {
             board.score = self.eval_board(&board.board, board.score, gizmos)?;
+
+            if board.score > 0.0 {
+                let mut head = snake.head;
+                for dir in board.history.iter() {
+                    gizmos
+                        .lines
+                        .push((head, head + dir.as_vec2(), Color::srgb(1.0, 0.0, 0.0)));
+                    head += dir.as_vec2();
+                }
+            }
         }
 
         let max_board = final_boards
