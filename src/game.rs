@@ -98,7 +98,6 @@ fn start_ws(mut player_connections: ResMut<PlayerConnections>) {
                     Ok(Message::Text(msg)) => {
                         let game_updates: GameUpdates =
                             serde_json::from_str(&msg.to_string()).unwrap();
-                        info!("Received message: {:?}", msg);
                         tx_updates.send(game_updates).unwrap();
                     }
                     Err(e) => {
@@ -114,7 +113,7 @@ fn start_ws(mut player_connections: ResMut<PlayerConnections>) {
             // send messages to server
             loop {
                 let game_command = rx_commands.recv().unwrap();
-                info!("Sending message: {:?}", game_command);
+                debug!("Sending message: {:?}", game_command);
                 let msg = Message::Text(serde_json::to_string(&game_command).unwrap().into());
                 runtime.block_on(write.send(msg)).unwrap();
             }
@@ -167,11 +166,11 @@ pub fn update_game(
     mut board: ResMut<Board>,
     mut next_game_state: ResMut<NextState<GameState>>,
     mut points: ResMut<Points>,
-    // mut rng: ResMut<Rng>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     settings: Res<Settings>,
     player_connections: Res<PlayerConnections>,
+    mut server_tick: Local<u64>,
 ) {
     if settings.do_game_tick {
         timer.set_duration(Duration::from_secs_f32(1.0 / settings.tps));
@@ -179,6 +178,8 @@ pub fn update_game(
     } else {
         timer.reset();
     }
+
+    let (game_updates, game_messages) = &player_connections[0];
 
     for SnakeInput {
         input_map,
@@ -199,26 +200,37 @@ pub fn update_game(
             } {
                 let last_in_queue = input_queue.back();
 
-                if let Some(&last_in_queue) = last_in_queue {
-                    if input != last_in_queue && input != last_in_queue.opposite() {
-                        input_queue.push_back(input);
-                    }
-                } else {
-                    input_queue.push_back(input);
+                info!("Input pressed: {:?} - Queue: {:?}", input, input_queue);
+
+                // dont put same direction in queue twice
+                if last_in_queue.is_some_and(|&last| input == last || input == last.opposite()) {
+                    continue;
                 }
+
+                // if queue is empty, send input immediately
+                if input_queue.is_empty() {
+                    let input = GameCommands::Input {
+                        direction: input,
+                        tick: *server_tick,
+                    };
+                    info!("Prempetively sent input {:?}", input);
+                    game_messages.send(input).unwrap();
+                }
+
+                // still add input to queue to mark that an input has been sent
+                input_queue.push_back(input);
+                info!("Queue: {:?}", input_queue);
             }
         }
     }
 
-    let (game_updates, game_messages) = &player_connections[0];
     if let Ok(game_updates) = game_updates.try_recv() {
         match game_updates {
             GameUpdates::Ticked {
                 board: new_board,
                 events,
+                tick,
             } => {
-                info!("Received game updates");
-
                 *board = new_board;
                 for event in events {
                     match event {
@@ -235,64 +247,28 @@ pub fn update_game(
                     }
                 }
 
-                let snakes = board.snakes();
-                let direction = input_queues[0]
-                    .input_queue
-                    .pop_front()
-                    .unwrap_or(snakes[&0].dir);
-                game_messages
-                    .send(GameCommands::Input { direction })
-                    .unwrap();
+                *server_tick = tick;
+
+                info!("Received board {}:\n{:?}", tick, board);
+
+                for SnakeInput { input_queue, .. } in input_queues.iter_mut() {
+                    if !input_queue.is_empty() {
+                        info!("Queue: {:?}", input_queue);
+                    }
+                    
+                    // first input is sent immediately, rest are send immediately on the next tick
+                    input_queue.pop_front();
+
+                    // send next input in queue
+                    if let Some(direction) = input_queue.pop_front() {
+                        let input = GameCommands::Input { direction, tick };
+                        info!("Sent input {:?}", input);
+                        game_messages.send(input).unwrap();
+                    }
+                }
             }
         }
     }
-
-    // if timer.just_finished() || !settings.do_game_tick {
-    //     let inputs: Vec<Option<Direction>> = input_queues
-    //         .iter_mut()
-    //         .map(|i| i.input_queue.pop_front())
-    //         .collect();
-
-    //     // while let Ok(WebCommands::SendInput {
-    //     //     direction,
-    //     //     snake_id,
-    //     // }) = web_resources.web_commands.try_recv()
-    //     // {
-    //     //     inputs[snake_id as usize] = Some(direction);
-    //     // }
-
-    //     let snakes = board.snakes();
-    //     if inputs[0..snakes.len()].iter().any(|i| i.is_some()) || settings.do_game_tick {
-    //         match board.tick_board(&inputs, &mut rng) {
-    //             Ok(events) => {
-    //                 for event in events {
-    //                     match event {
-    //                         BoardEvent::GameOver => {
-    //                             next_game_state.set(GameState::GameOver);
-    //                         }
-    //                         BoardEvent::SnakeDamaged { .. } => {
-    //                             for (snake_id, _) in board.snakes().into_iter() {
-    //                                 points[snake_id as usize] += 1;
-    //                             }
-    //                         }
-    //                         _ => {}
-    //                     }
-    //                 }
-    //             }
-    //             Err(e) => {
-    //                 warn!("Board tick error: {:?}", e);
-    //                 next_game_state.set(GameState::GameOver);
-    //             }
-    //         }
-
-    //         // web_resources
-    //         //     .web_updates
-    //         //     .send(WebUpdates::UpdateBoard {
-    //         //         board: board.clone(),
-    //         //     })
-    //         //     .ok();
-    //     }
-    // }
 }
 
 pub struct AIPlugin;

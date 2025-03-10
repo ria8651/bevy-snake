@@ -1,5 +1,5 @@
 use crate::{
-    board::{Board, BoardSettings},
+    board::{Board, BoardEvent, BoardSettings, Direction},
     GameCommands, GameUpdates,
 };
 use actix_web::{
@@ -9,9 +9,9 @@ use actix_web::{
 };
 use actix_ws::Message;
 use futures::future::{pending, select_all};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use rand::{rngs::StdRng, SeedableRng};
-use std::{net::ToSocketAddrs, time::Duration};
+use std::{collections::HashMap, net::ToSocketAddrs, time::Duration};
 use tokio::{
     select,
     sync::{
@@ -53,42 +53,128 @@ pub async fn start_server<A: ToSocketAddrs + Send + 'static>(ip: A) {
     }
 }
 
-async fn game_loop(mut register_client: Receiver<Client>) {
-    let mut clients = Clients::new();
-    let mut rng = StdRng::from_os_rng();
-    let mut board = Board::new(BoardSettings::default());
+async fn game_loop(register_client: Receiver<Client>) {
+    let mut game_loop = GameLoop::new(register_client).await;
+    game_loop.game_loop().await;
+}
 
-    loop {
-        select! {
-            // register a new client
-            client = register_client.recv() => {
-                let Some(client) = client else {
-                    error!("register_client channel closed");
-                    break;
-                };
-                info!("new client registered at index {}", clients.clients.len());
-                client.game_updates.send(GameUpdates::Ticked { board: board.clone(), events: Vec::new() }).await.unwrap();
-                clients.push(client);
-            }
-            // loop through all clients and handle their game commands
-            command = clients.next_command() => {
-                match command {
-                    GameCommands::Input { direction } => {
-                        let events =match  board.tick_board(&[Some(direction)], &mut rng) {
-                            Ok(events) => events,
-                            Err(e) => {
-                                error!("{}", e);
-                                break;
-                            }
-                        };
+struct GameLoop {
+    clients: Clients,
+    register_client: Receiver<Client>,
+    queued_inputs: HashMap<usize, Direction>,
+    rng: StdRng,
+    board: Board,
+    tick: u64,
+}
 
-                        clients.broadcast(GameUpdates::Ticked { board: board.clone(), events }).await;
+impl GameLoop {
+    async fn new(register_client: Receiver<Client>) -> Self {
+        Self {
+            clients: Clients::new(),
+            register_client,
+            queued_inputs: HashMap::new(),
+            rng: StdRng::from_os_rng(),
+            board: Board::new(BoardSettings::default()),
+            tick: 0,
+        }
+    }
 
-                        println!("{:?}", board);
+    async fn game_loop(&mut self) {
+        // sleep for 5 seconds to allow clients to connect
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let mut ticker = interval(Duration::from_secs_f32(1.0 / 7.5));
+        loop {
+            select! {
+                // register a new client
+                client = self.register_client.recv() => {
+                    let Some(client) = client else {
+                        error!("register_client channel closed");
+                        break;
+                    };
+                    self.register_client(client).await;
+                }
+                // process client commands
+                (client, command) = self.clients.next_command() => {
+                    self.process_command(client, command).await;
+                }
+                // tick the game board
+                _ = ticker.tick() => {
+                    if self.tick().await.is_err() {
+                        break;
                     }
                 }
             }
         }
+    }
+
+    async fn register_client(&mut self, client: Client) {
+        info!(
+            "new client registered at index {}",
+            self.clients.clients.len()
+        );
+        client
+            .game_updates
+            .send(GameUpdates::Ticked {
+                board: self.board.clone(),
+                events: Vec::new(),
+                tick: self.tick,
+            })
+            .await
+            .unwrap();
+        self.clients.push(client);
+    }
+
+    async fn process_command(&mut self, client: usize, command: GameCommands) {
+        match command {
+            GameCommands::Input { direction, tick } => {
+                if tick != self.tick {
+                    warn!(
+                        "client missed game tick; expected {}, got {}",
+                        self.tick, tick
+                    );
+                    return;
+                }
+
+                self.queued_inputs.insert(client, direction);
+            }
+        }
+    }
+
+    async fn tick(&mut self) -> Result<(), ()> {
+        self.tick += 1;
+
+        let mut inputs = [None; 4];
+        for (client, direction) in self.queued_inputs.drain() {
+            inputs[client] = Some(direction);
+        }
+
+        let events = match self.board.tick_board(&inputs, &mut self.rng) {
+            Ok(events) => events,
+            Err(e) => {
+                error!("{}", e);
+                return Err(());
+            }
+        };
+
+        let game_over = events.contains(&BoardEvent::GameOver);
+
+        self.clients
+            .broadcast(GameUpdates::Ticked {
+                board: self.board.clone(),
+                events,
+                tick: self.tick,
+            })
+            .await;
+
+        debug!("ticked board ({}):\n{:?}", self.tick, self.board);
+
+        if game_over {
+            info!("game over");
+            return Err(());
+        }
+
+        Ok(())
     }
 }
 
@@ -107,7 +193,7 @@ impl Clients {
         self.clients.push(client);
     }
 
-    async fn next_command(&mut self) -> GameCommands {
+    async fn next_command(&mut self) -> (usize, GameCommands) {
         loop {
             if self.clients.is_empty() {
                 // return pending future if there are no clients
@@ -122,7 +208,7 @@ impl Clients {
             .await;
 
             if let Some(game_command) = game_command {
-                return game_command;
+                return (index, game_command);
             }
 
             self.clients.remove(index);

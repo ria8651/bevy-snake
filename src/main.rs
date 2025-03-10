@@ -66,12 +66,12 @@ fn main() {
             }),
             ui::UiPlugin,
             game::GamePlugin,
-            game::AIPlugin,
+            // game::AIPlugin,
             render::BoardRenderPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.1, 0.1, 0.1)))
         .insert_resource(Settings {
-            interpolation: true,
+            interpolation: false,
             do_game_tick: true,
             tps: 7.5,
             tps_ramp: false,

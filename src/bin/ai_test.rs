@@ -31,6 +31,6 @@ fn main() {
         scores.push(score);
     }
 
-    let output= serde_json::to_string(&scores).unwrap();
+    let output = serde_json::to_string(&scores).unwrap();
     println!("{}", output);
 }
