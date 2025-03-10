@@ -8,6 +8,7 @@ pub mod server;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GameCommands {
     Input { tick: u64, direction: Direction },
+    RestartGame,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

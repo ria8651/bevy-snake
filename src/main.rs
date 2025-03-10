@@ -90,6 +90,7 @@ fn main() {
 
 fn game_state(
     mut next_game_state: ResMut<NextState<GameState>>,
+    mut exit: EventWriter<AppExit>,
     game_state: Res<State<GameState>>,
     keys: Res<ButtonInput<KeyCode>>,
     settings: Res<Settings>,
@@ -109,6 +110,12 @@ fn game_state(
                 next_game_state.set(GameState::Start);
             }
         }
+    }
+
+    if keys.just_pressed(KeyCode::KeyW)
+        && keys.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight])
+    {
+        exit.send(AppExit::Success);
     }
 }
 

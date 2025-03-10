@@ -65,7 +65,7 @@ impl Plugin for GamePlugin {
             ]))
             .add_systems(Startup, start_ws)
             .add_systems(OnEnter(GameState::Start), reset_game)
-            .add_systems(Update, update_game.run_if(in_state(GameState::InGame)));
+            .add_systems(Update, update_game); // .run_if(in_state(GameState::InGame)));
     }
 }
 
@@ -113,7 +113,7 @@ fn start_ws(mut player_connections: ResMut<PlayerConnections>) {
             // send messages to server
             loop {
                 let game_command = rx_commands.recv().unwrap();
-                debug!("Sending message: {:?}", game_command);
+                info!("Sending message: {:?}", game_command);
                 let msg = Message::Text(serde_json::to_string(&game_command).unwrap().into());
                 runtime.block_on(write.send(msg)).unwrap();
             }
@@ -148,6 +148,7 @@ pub struct InputMap {
 pub fn reset_game(
     mut board: ResMut<Board>,
     mut input_queues: ResMut<SnakeInputs>,
+    player_connections: Res<PlayerConnections>,
     settings: Res<Settings>,
 ) {
     *board = Board::new(settings.board_settings);
@@ -155,6 +156,9 @@ pub fn reset_game(
     for SnakeInput { input_queue, .. } in input_queues.iter_mut() {
         input_queue.clear();
     }
+
+    let (_game_updates, game_commands) = &player_connections[0];
+    game_commands.send(GameCommands::RestartGame).unwrap();
 }
 
 #[derive(Resource, Deref, DerefMut)]
@@ -164,7 +168,7 @@ pub fn update_game(
     mut input_queues: ResMut<SnakeInputs>,
     mut timer: ResMut<TickTimer>,
     mut board: ResMut<Board>,
-    mut next_game_state: ResMut<NextState<GameState>>,
+    // mut next_game_state: ResMut<NextState<GameState>>,
     mut points: ResMut<Points>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -179,7 +183,8 @@ pub fn update_game(
         timer.reset();
     }
 
-    let (game_updates, game_messages) = &player_connections[0];
+    info!("checking for game updates");
+    let (game_updates, game_commands) = &player_connections[0];
 
     for SnakeInput {
         input_map,
@@ -200,8 +205,6 @@ pub fn update_game(
             } {
                 let last_in_queue = input_queue.back();
 
-                info!("Input pressed: {:?} - Queue: {:?}", input, input_queue);
-
                 // dont put same direction in queue twice
                 if last_in_queue.is_some_and(|&last| input == last || input == last.opposite()) {
                     continue;
@@ -213,13 +216,12 @@ pub fn update_game(
                         direction: input,
                         tick: *server_tick,
                     };
-                    info!("Prempetively sent input {:?}", input);
-                    game_messages.send(input).unwrap();
+
+                    game_commands.send(input).unwrap();
                 }
 
                 // still add input to queue to mark that an input has been sent
                 input_queue.push_back(input);
-                info!("Queue: {:?}", input_queue);
             }
         }
     }
@@ -234,10 +236,10 @@ pub fn update_game(
                 *board = new_board;
                 for event in events {
                     match event {
-                        BoardEvent::GameOver => {
-                            next_game_state.set(GameState::GameOver);
-                            return;
-                        }
+                        // BoardEvent::GameOver => {
+                        //     next_game_state.set(GameState::GameOver);
+                        //     return;
+                        // }
                         BoardEvent::SnakeDamaged { .. } => {
                             for (snake_id, _) in board.snakes().into_iter() {
                                 points[snake_id as usize] += 1;
@@ -249,21 +251,14 @@ pub fn update_game(
 
                 *server_tick = tick;
 
-                info!("Received board {}:\n{:?}", tick, board);
-
                 for SnakeInput { input_queue, .. } in input_queues.iter_mut() {
-                    if !input_queue.is_empty() {
-                        info!("Queue: {:?}", input_queue);
-                    }
-                    
                     // first input is sent immediately, rest are send immediately on the next tick
                     input_queue.pop_front();
 
                     // send next input in queue
                     if let Some(direction) = input_queue.pop_front() {
                         let input = GameCommands::Input { direction, tick };
-                        info!("Sent input {:?}", input);
-                        game_messages.send(input).unwrap();
+                        game_commands.send(input).unwrap();
                     }
                 }
             }

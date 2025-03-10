@@ -1,5 +1,5 @@
 use crate::{
-    board::{Board, BoardEvent, BoardSettings, Direction},
+    board::{Board, BoardSettings, Direction},
     GameCommands, GameUpdates,
 };
 use actix_web::{
@@ -80,9 +80,6 @@ impl GameLoop {
     }
 
     async fn game_loop(&mut self) {
-        // sleep for 5 seconds to allow clients to connect
-        tokio::time::sleep(Duration::from_secs(1)).await;
-
         let mut ticker = interval(Duration::from_secs_f32(1.0 / 7.5));
         loop {
             select! {
@@ -100,9 +97,7 @@ impl GameLoop {
                 }
                 // tick the game board
                 _ = ticker.tick() => {
-                    if self.tick().await.is_err() {
-                        break;
-                    }
+                    self.tick().await;
                 }
             }
         }
@@ -138,10 +133,20 @@ impl GameLoop {
 
                 self.queued_inputs.insert(client, direction);
             }
+            GameCommands::RestartGame => {
+                self.board = Board::new(BoardSettings::default());
+                self.clients
+                    .broadcast(GameUpdates::Ticked {
+                        tick: self.tick,
+                        board: self.board.clone(),
+                        events: Vec::new(),
+                    })
+                    .await;
+            }
         }
     }
 
-    async fn tick(&mut self) -> Result<(), ()> {
+    async fn tick(&mut self) {
         self.tick += 1;
 
         let mut inputs = [None; 4];
@@ -152,12 +157,10 @@ impl GameLoop {
         let events = match self.board.tick_board(&inputs, &mut self.rng) {
             Ok(events) => events,
             Err(e) => {
-                error!("{}", e);
-                return Err(());
+                error!("Board error: {}", e);
+                return;
             }
         };
-
-        let game_over = events.contains(&BoardEvent::GameOver);
 
         self.clients
             .broadcast(GameUpdates::Ticked {
@@ -168,13 +171,6 @@ impl GameLoop {
             .await;
 
         debug!("ticked board ({}):\n{:?}", self.tick, self.board);
-
-        if game_over {
-            info!("game over");
-            return Err(());
-        }
-
-        Ok(())
     }
 }
 
