@@ -530,21 +530,21 @@ pub struct Snake {
     pub tail: IVec2,
 }
 
-#[derive(Reflect, PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(Reflect, PartialEq, Eq, Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum BoardSize {
     Small,
     Medium,
     Large,
 }
 
-#[derive(Reflect, PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(Reflect, PartialEq, Eq, Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum AppleCount {
     One = 1,
     Three = 3,
     Five = 5,
 }
 
-#[derive(Reflect, PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(Reflect, PartialEq, Eq, Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum PlayerCount {
     One = 1,
     Two = 2,
@@ -552,7 +552,7 @@ pub enum PlayerCount {
     Four = 4,
 }
 
-#[derive(Reflect, Clone, Copy, Debug)]
+#[derive(Reflect, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct BoardSettings {
     pub board_size: BoardSize,
     pub apples: AppleCount,

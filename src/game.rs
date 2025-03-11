@@ -16,56 +16,59 @@ pub struct GamePlugin;
 
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(TickTimer(Timer::from_seconds(1.0, TimerMode::Repeating)))
-            .insert_resource(Board::empty(0, 0))
-            .insert_resource(Rng(StdRng::from_os_rng()))
-            .insert_resource(PlayerConnections::default())
-            .insert_resource(Points(vec![0; 4]))
-            .insert_resource(SnakeInputs(vec![
-                SnakeInput {
-                    input_map: InputMap {
-                        up: KeyCode::KeyW,
-                        down: KeyCode::KeyS,
-                        left: KeyCode::KeyA,
-                        right: KeyCode::KeyD,
-                        shoot: KeyCode::Space,
-                    },
-                    input_queue: VecDeque::new(),
+        app.insert_resource(TickTimer(Timer::from_seconds(
+            1.0 / 7.5,
+            TimerMode::Repeating,
+        )))
+        .insert_resource(Board::empty(0, 0))
+        .insert_resource(Rng(StdRng::from_os_rng()))
+        .insert_resource(PlayerConnections::default())
+        .insert_resource(Points(vec![0; 4]))
+        .insert_resource(SnakeInputs(vec![
+            SnakeInput {
+                input_map: InputMap {
+                    up: KeyCode::KeyW,
+                    down: KeyCode::KeyS,
+                    left: KeyCode::KeyA,
+                    right: KeyCode::KeyD,
+                    shoot: KeyCode::Space,
                 },
-                SnakeInput {
-                    input_map: InputMap {
-                        up: KeyCode::ArrowUp,
-                        down: KeyCode::ArrowDown,
-                        left: KeyCode::ArrowLeft,
-                        right: KeyCode::ArrowRight,
-                        shoot: KeyCode::AltRight,
-                    },
-                    input_queue: VecDeque::new(),
+                input_queue: VecDeque::new(),
+            },
+            SnakeInput {
+                input_map: InputMap {
+                    up: KeyCode::ArrowUp,
+                    down: KeyCode::ArrowDown,
+                    left: KeyCode::ArrowLeft,
+                    right: KeyCode::ArrowRight,
+                    shoot: KeyCode::AltRight,
                 },
-                SnakeInput {
-                    input_map: InputMap {
-                        up: KeyCode::KeyP,
-                        down: KeyCode::Semicolon,
-                        left: KeyCode::KeyL,
-                        right: KeyCode::Quote,
-                        shoot: KeyCode::Backslash,
-                    },
-                    input_queue: VecDeque::new(),
+                input_queue: VecDeque::new(),
+            },
+            SnakeInput {
+                input_map: InputMap {
+                    up: KeyCode::KeyP,
+                    down: KeyCode::Semicolon,
+                    left: KeyCode::KeyL,
+                    right: KeyCode::Quote,
+                    shoot: KeyCode::Backslash,
                 },
-                SnakeInput {
-                    input_map: InputMap {
-                        up: KeyCode::KeyY,
-                        down: KeyCode::KeyH,
-                        left: KeyCode::KeyG,
-                        right: KeyCode::KeyJ,
-                        shoot: KeyCode::KeyB,
-                    },
-                    input_queue: VecDeque::new(),
+                input_queue: VecDeque::new(),
+            },
+            SnakeInput {
+                input_map: InputMap {
+                    up: KeyCode::KeyY,
+                    down: KeyCode::KeyH,
+                    left: KeyCode::KeyG,
+                    right: KeyCode::KeyJ,
+                    shoot: KeyCode::KeyB,
                 },
-            ]))
-            .add_systems(Startup, start_ws)
-            .add_systems(OnEnter(GameState::Start), reset_game)
-            .add_systems(Update, update_game); // .run_if(in_state(GameState::InGame)));
+                input_queue: VecDeque::new(),
+            },
+        ]))
+        .add_systems(Startup, start_ws)
+        .add_systems(OnEnter(GameState::Start), reset_game)
+        .add_systems(Update, update_game); // .run_if(in_state(GameState::InGame)));
     }
 }
 
@@ -158,7 +161,11 @@ pub fn reset_game(
     }
 
     let (_game_updates, game_commands) = &player_connections[0];
-    game_commands.send(GameCommands::RestartGame).unwrap();
+    game_commands
+        .send(GameCommands::RestartGame {
+            board_settings: settings.board_settings.clone(),
+        })
+        .unwrap();
 }
 
 #[derive(Resource, Deref, DerefMut)]
@@ -168,23 +175,77 @@ pub fn update_game(
     mut input_queues: ResMut<SnakeInputs>,
     mut timer: ResMut<TickTimer>,
     mut board: ResMut<Board>,
-    // mut next_game_state: ResMut<NextState<GameState>>,
     mut points: ResMut<Points>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
-    settings: Res<Settings>,
     player_connections: Res<PlayerConnections>,
     mut server_tick: Local<u64>,
 ) {
-    if settings.do_game_tick {
-        timer.set_duration(Duration::from_secs_f32(1.0 / settings.tps));
-        timer.tick(time.delta());
-    } else {
-        timer.reset();
-    }
+    timer.tick(time.delta());
+    // if settings.do_game_tick {
+    //     timer.set_duration(Duration::from_secs_f32(1.0 / settings.tps));
+    //     timer.tick(time.delta());
+    // } else {
+    //     timer.reset();
+    // }
 
-    info!("checking for game updates");
     let (game_updates, game_commands) = &player_connections[0];
+
+    if let Ok(game_updates) = game_updates.try_recv() {
+        match game_updates {
+            GameUpdates::Ticked {
+                board: new_board,
+                events,
+                tick,
+            } => {
+                info!("received {}", tick);
+
+                *board = new_board;
+                for event in events {
+                    match event {
+                        BoardEvent::GameOver => {
+                            info!("game over");
+                            // next_game_state.set(GameState::GameOver);
+                            // return;
+                        }
+                        BoardEvent::SnakeDamaged { .. } => {
+                            for (snake_id, _) in board.snakes().into_iter() {
+                                points[snake_id as usize] += 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                *server_tick = tick;
+                timer.reset();
+
+                for SnakeInput { input_queue, .. } in input_queues.iter_mut() {
+                    // first input is sent immediately, rest are send immediately on the next tick
+                    input_queue.pop_front();
+
+                    // send next input in queue
+                    if let Some(direction) = input_queue.pop_front() {
+                        let input = GameCommands::Input { direction, tick };
+                        game_commands.send(input).unwrap();
+                    }
+                }
+
+                // let ai = TreeSearch {
+                //     max_depth: 100,
+                //     max_time: Duration::from_millis(5),
+                // };
+                // if let Ok(dir) = ai.chose_move(board.as_ref(), &mut None) {
+                //     let (_game_updates, game_commands) = &player_connections[0];
+                //     let input = GameCommands::Input {
+                //         direction: dir,
+                //         tick,
+                //     };
+                //     game_commands.send(input).unwrap();
+                // }
+            }
+        }
+    }
 
     for SnakeInput {
         input_map,
@@ -216,51 +277,19 @@ pub fn update_game(
                         direction: input,
                         tick: *server_tick,
                     };
-
                     game_commands.send(input).unwrap();
                 }
 
                 // still add input to queue to mark that an input has been sent
                 input_queue.push_back(input);
-            }
-        }
-    }
 
-    if let Ok(game_updates) = game_updates.try_recv() {
-        match game_updates {
-            GameUpdates::Ticked {
-                board: new_board,
-                events,
-                tick,
-            } => {
-                *board = new_board;
-                for event in events {
-                    match event {
-                        // BoardEvent::GameOver => {
-                        //     next_game_state.set(GameState::GameOver);
-                        //     return;
-                        // }
-                        BoardEvent::SnakeDamaged { .. } => {
-                            for (snake_id, _) in board.snakes().into_iter() {
-                                points[snake_id as usize] += 1;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+                // let input = GameCommands::Input {
+                //     direction: input,
+                //     tick: *server_tick,
+                // };
+                // game_commands.send(input).unwrap();
 
-                *server_tick = tick;
-
-                for SnakeInput { input_queue, .. } in input_queues.iter_mut() {
-                    // first input is sent immediately, rest are send immediately on the next tick
-                    input_queue.pop_front();
-
-                    // send next input in queue
-                    if let Some(direction) = input_queue.pop_front() {
-                        let input = GameCommands::Input { direction, tick };
-                        game_commands.send(input).unwrap();
-                    }
-                }
+                info!("sent input");
             }
         }
     }

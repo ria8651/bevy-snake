@@ -71,7 +71,7 @@ fn main() {
         ))
         .insert_resource(ClearColor(Color::srgb(0.1, 0.1, 0.1)))
         .insert_resource(Settings {
-            interpolation: false,
+            interpolation: true,
             do_game_tick: true,
             tps: 7.5,
             tps_ramp: false,

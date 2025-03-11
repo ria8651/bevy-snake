@@ -1,4 +1,4 @@
-use board::{Board, BoardEvent, Direction};
+use board::{Board, BoardEvent, BoardSettings, Direction};
 use serde::{Deserialize, Serialize};
 
 pub mod ai;
@@ -8,7 +8,7 @@ pub mod server;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GameCommands {
     Input { tick: u64, direction: Direction },
-    RestartGame,
+    RestartGame { board_settings: BoardSettings },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

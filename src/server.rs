@@ -128,13 +128,15 @@ impl GameLoop {
                         "client missed game tick; expected {}, got {}",
                         self.tick, tick
                     );
-                    return;
+                    // return;
                 }
+
+                info!("client {} input: {:?}", client, direction);
 
                 self.queued_inputs.insert(client, direction);
             }
-            GameCommands::RestartGame => {
-                self.board = Board::new(BoardSettings::default());
+            GameCommands::RestartGame { board_settings } => {
+                self.board = Board::new(board_settings);
                 self.clients
                     .broadcast(GameUpdates::Ticked {
                         tick: self.tick,
