@@ -131,7 +131,7 @@ impl GameLoop {
                     // return;
                 }
 
-                info!("client {} input: {:?}", client, direction);
+                info!("client {} input: {:?} ({})", client, direction, self.tick);
 
                 self.queued_inputs.insert(client, direction);
             }

@@ -102,7 +102,7 @@ fn ui_system(
         ui.checkbox(&mut settings.walls_debug, "Walls debug");
 
         if ui.button("New Game").clicked() {
-            next_game_state.set(GameState::Start);
+            next_game_state.set(GameState::InGame);
         }
 
         ui.label("Controls");

@@ -10,10 +10,8 @@ mod ui;
 
 #[derive(States, Default, Debug, Hash, PartialEq, Eq, Clone)]
 pub enum GameState {
-    #[default]
-    Setup,
-    Start,
     InGame,
+    #[default]
     GameOver,
 }
 
@@ -66,7 +64,7 @@ fn main() {
             }),
             ui::UiPlugin,
             game::GamePlugin,
-            // game::AIPlugin,
+            game::AIPlugin,
             render::BoardRenderPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.1, 0.1, 0.1)))
@@ -97,8 +95,6 @@ fn game_state(
     board: Res<Board>,
 ) {
     match game_state.get() {
-        GameState::Setup => next_game_state.set(GameState::Start),
-        GameState::Start => next_game_state.set(GameState::InGame),
         GameState::InGame => {
             let snakes = board.count_snakes();
             if snakes <= (settings.board_settings.players as usize != 1) as usize {
@@ -107,7 +103,7 @@ fn game_state(
         }
         GameState::GameOver => {
             if keys.just_pressed(KeyCode::Space) {
-                next_game_state.set(GameState::Start);
+                next_game_state.set(GameState::InGame);
             }
         }
     }
