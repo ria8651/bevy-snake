@@ -4,6 +4,7 @@ use bevy_snake::{
     server::start_server,
 };
 
+mod client;
 mod game;
 mod render;
 mod ui;
@@ -62,10 +63,11 @@ fn main() {
                 }),
                 ..default()
             }),
-            ui::UiPlugin,
+            client::ClientPlugin,
             game::GamePlugin,
             game::AIPlugin,
             render::BoardRenderPlugin,
+            ui::UiPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.1, 0.1, 0.1)))
         .insert_resource(Settings {
