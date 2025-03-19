@@ -1,8 +1,5 @@
 use bevy::prelude::*;
-use bevy_snake::{
-    board::{Board, BoardSettings},
-    server::start_server,
-};
+use bevy_snake::board::BoardSettings;
 
 mod client;
 mod game;
@@ -11,8 +8,8 @@ mod ui;
 
 #[derive(States, Default, Debug, Hash, PartialEq, Eq, Clone)]
 pub enum GameState {
-    InGame,
     #[default]
+    InGame,
     GameOver,
 }
 
@@ -50,7 +47,7 @@ pub struct AnimationTimer(Timer);
 
 fn main() {
     // start server
-    std::thread::spawn(|| start_server(("0.0.0.0", 1234)));
+    // std::thread::spawn(|| bevy_snake::server::start_server(("0.0.0.0", 1234)));
 
     App::new()
         .add_plugins((
@@ -93,21 +90,14 @@ fn game_state(
     mut exit: EventWriter<AppExit>,
     game_state: Res<State<GameState>>,
     keys: Res<ButtonInput<KeyCode>>,
-    settings: Res<Settings>,
-    board: Res<Board>,
 ) {
     match game_state.get() {
-        GameState::InGame => {
-            let snakes = board.count_snakes();
-            if snakes <= (settings.board_settings.players as usize != 1) as usize {
-                next_game_state.set(GameState::GameOver);
-            }
-        }
         GameState::GameOver => {
             if keys.just_pressed(KeyCode::Space) {
                 next_game_state.set(GameState::InGame);
             }
         }
+        _ => {}
     }
 
     if keys.just_pressed(KeyCode::KeyW)

@@ -99,7 +99,9 @@ pub fn reset_game(
         input_queue.clear();
     }
 
-    let (_game_updates, game_commands) = &player_connections[0];
+    let Some((_game_updates, game_commands)) = &player_connections.get(0) else {
+        return;
+    };
     game_commands
         .send(GameCommands::RestartGame {
             board_settings: settings.board_settings.clone(),
@@ -116,6 +118,7 @@ pub fn update_game(
     mut board: ResMut<Board>,
     mut points: ResMut<Points>,
     mut next_game_state: ResMut<NextState<GameState>>,
+    game_state: Res<State<GameState>>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     player_connections: Res<PlayerConnections>,
@@ -177,6 +180,10 @@ pub fn update_game(
                 //     };
                 //     game_commands.send(input).unwrap();
                 // }
+
+                if *game_state != GameState::InGame {
+                    next_game_state.set(GameState::InGame);
+                }
             }
         }
     }
