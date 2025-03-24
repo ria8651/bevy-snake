@@ -6,11 +6,9 @@ description = "SNAKE WITH GUNS!"
 default-run = "bevy-snake"
 
 [dependencies]
-bevy = { version = "0.15.3", default-features = false, features = [
+bevy = { version = "0.15", default-features = false, features = [
     "bevy_asset",
     "bevy_state",
-    "bevy_audio",
-    "bevy_gilrs",
     "bevy_scene",
     "bevy_winit",
     "bevy_core_pipeline",
@@ -18,28 +16,34 @@ bevy = { version = "0.15.3", default-features = false, features = [
     "bevy_sprite",
     "bevy_text",
     "bevy_ui",
-    "png",
-    "vorbis",
     "x11",
     "bevy_gizmos",
     "webgl2",
-    "bevy_debug_stepping",
+    "png",
 ] }
-bevy-inspector-egui = "0.29.1"
-rand = "0.9.0"
+bevy-inspector-egui = "0.30"
+bevy_nfws = "0.3"
+
+serde = { version = "1.0", features = ["derive"] }
+tokio-tungstenite-wasm = "0.5"
+
+web-time = "1.1"
+rand = "0.9"
+getrandom = { version = "0.3", features = ["wasm_js"] }
 thiserror = "2.0"
-actix-web = "4.9.0"
-actix-ws = "0.3.0"
-tokio = { version = "1.43.0", features = ["full"] }
-serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0"
 futures = "0.3"
-crossbeam = "0.8.4"
-lazy_static = "1.5.0"
-colored = "3.0.0"
-log = "0.4.26"
-colog = "1.3.0"
-async-tungstenite = { version = "0.29.1", features = ["tokio-runtime"] }
+crossbeam = "0.8"
+lazy_static = "1.5"
+colored = "3.0"
+log = "0.4"
+colog = "1.3"
+
+# server only dependencies, don't work on wasm
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1.43", features = ["full"] }
+actix-web = "4.9"
+actix-ws = "0.3"
 
 [profile.release]
 debug = true

@@ -3,10 +3,8 @@
 use crate::board::{Board, BoardEvent, Cell, Direction};
 use bevy::prelude::*;
 use rand::prelude::SliceRandom;
-use std::{
-    collections::{HashMap, HashSet, VecDeque},
-    time::{Duration, Instant},
-};
+use std::collections::{HashMap, HashSet, VecDeque};
+use web_time::{Duration, Instant};
 
 pub trait SnakeAI {
     fn chose_move(

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod ai;
 pub mod board;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod server;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

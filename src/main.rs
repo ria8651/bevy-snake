@@ -47,14 +47,15 @@ pub struct AnimationTimer(Timer);
 
 fn main() {
     // start server
-    // std::thread::spawn(|| bevy_snake::server::start_server(("0.0.0.0", 1234)));
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::spawn(|| bevy_snake::server::start_server(("0.0.0.0", 1234)));
 
     App::new()
         .add_plugins((
             DefaultPlugins.set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "Snake, WITH GUNS!".to_string(),
-                    canvas: Some("#bevy".to_string()),
+                    // canvas: Some("#bevy".to_string()),
                     prevent_default_event_handling: false,
                     ..default()
                 }),

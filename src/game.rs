@@ -1,4 +1,4 @@
-use crate::{client::PlayerConnections, GameState, GizmoSetting, Settings};
+use crate::{client::ClientConnection, GameState, GizmoSetting, Settings};
 use bevy::{prelude::*, utils::HashMap};
 use bevy_snake::{
     ai::{cycle_basis, AIGizmos, SnakeAI, TreeSearch},
@@ -58,6 +58,7 @@ impl Plugin for GamePlugin {
                     input_queue: VecDeque::new(),
                 },
             ]))
+            .add_systems(Startup, create_client)
             .add_systems(OnEnter(GameState::InGame), reset_game)
             .add_systems(Update, update_game);
     }
@@ -87,10 +88,14 @@ pub struct InputMap {
     pub shoot: KeyCode,
 }
 
+pub fn create_client(mut commands: Commands) {
+    commands.spawn(ClientConnection::default());
+}
+
 pub fn reset_game(
     mut board: ResMut<Board>,
     mut input_queues: ResMut<SnakeInputs>,
-    player_connections: Res<PlayerConnections>,
+    mut client_connections: Query<&mut ClientConnection>,
     settings: Res<Settings>,
 ) {
     *board = Board::new(settings.board_settings);
@@ -99,14 +104,13 @@ pub fn reset_game(
         input_queue.clear();
     }
 
-    let Some((_game_updates, game_commands)) = &player_connections.get(0) else {
-        return;
-    };
-    game_commands
-        .send(GameCommands::RestartGame {
-            board_settings: settings.board_settings.clone(),
-        })
-        .unwrap();
+    if !client_connections.is_empty() {
+        client_connections
+            .single_mut()
+            .send(GameCommands::RestartGame {
+                board_settings: settings.board_settings.clone(),
+            });
+    }
 }
 
 #[derive(Resource, Deref, DerefMut)]
@@ -118,17 +122,16 @@ pub fn update_game(
     mut board: ResMut<Board>,
     mut points: ResMut<Points>,
     mut next_game_state: ResMut<NextState<GameState>>,
+    mut client_connections: Query<&mut ClientConnection>,
     game_state: Res<State<GameState>>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
-    player_connections: Res<PlayerConnections>,
     mut server_tick: Local<u64>,
 ) {
     timer.tick(time.delta());
 
-    let (game_updates, game_commands) = &player_connections[0];
-
-    if let Ok(game_updates) = game_updates.try_recv() {
+    let mut client_connection = client_connections.single_mut();
+    if let Some(game_updates) = client_connection.recv() {
         match game_updates {
             GameUpdates::Ticked {
                 board: new_board,
@@ -164,7 +167,7 @@ pub fn update_game(
                     // send next input in queue *without* popping it
                     if let Some(&direction) = input_queue.front() {
                         let input = GameCommands::Input { direction, tick };
-                        game_commands.send(input).unwrap();
+                        client_connection.send(input);
                     }
                 }
 
@@ -218,7 +221,7 @@ pub fn update_game(
                         direction: input,
                         tick: *server_tick,
                     };
-                    game_commands.send(input).unwrap();
+                    client_connection.send(input);
                 }
 
                 // still add input to queue to mark that an input has been sent
