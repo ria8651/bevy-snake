@@ -16,7 +16,12 @@ Hopefully it'll work `¯\_(ツ)_/¯`
 
 ### Web
 
-Install wasm-bindgen and run:
+Add the `wasm32-unknown-unknown` target and install `wasm-bindgen`:
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen
+```
 
 ```bash
 cargo build --release --target wasm32-unknown-unknown

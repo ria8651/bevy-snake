@@ -7,6 +7,7 @@ use bevy_snake::{
 };
 use rand::{rngs::StdRng, SeedableRng};
 use std::{collections::VecDeque, time::Duration};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 pub struct GamePlugin;
 
@@ -129,22 +130,29 @@ pub fn update_game(
     mut server_tick: Local<u64>,
 ) {
     timer.tick(time.delta());
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
 
-    let mut client_connection = client_connections.single_mut();
+    let Ok(mut client_connection) = client_connections.get_single_mut() else {
+        return;
+    };
     if let Some(game_updates) = client_connection.recv() {
         match game_updates {
             GameUpdates::Ticked {
                 board: new_board,
                 events,
                 tick,
+                timestamp,
             } => {
-                info!("received {}", tick);
+                info!("received {} ({}ms ping)", tick, now - timestamp);
 
                 *board = new_board;
                 for event in events {
                     match event {
                         BoardEvent::GameOver => {
-                            info!("game over");
+                            // info!("game over");
                             next_game_state.set(GameState::GameOver);
                             return;
                         }
@@ -166,7 +174,12 @@ pub fn update_game(
 
                     // send next input in queue *without* popping it
                     if let Some(&direction) = input_queue.front() {
-                        let input = GameCommands::Input { direction, tick };
+                        let input = GameCommands::Input {
+                            direction,
+                            tick,
+                            timestamp: now,
+                        };
+                        info!("sending {:?} ({})", input, tick);
                         client_connection.send(input);
                     }
                 }
@@ -220,7 +233,9 @@ pub fn update_game(
                     let input = GameCommands::Input {
                         direction: input,
                         tick: *server_tick,
+                        timestamp: now,
                     };
+                    info!("sending {:?} ({})", input, *server_tick);
                     client_connection.send(input);
                 }
 

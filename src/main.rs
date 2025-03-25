@@ -55,7 +55,7 @@ fn main() {
             DefaultPlugins.set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "Snake, WITH GUNS!".to_string(),
-                    // canvas: Some("#bevy".to_string()),
+                    canvas: Some("#bevy".to_string()),
                     prevent_default_event_handling: false,
                     ..default()
                 }),

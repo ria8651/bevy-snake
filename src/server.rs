@@ -1,5 +1,5 @@
 use crate::{
-    board::{Board, BoardSettings, Direction},
+    board::{Board, BoardEvent, BoardSettings, Direction},
     GameCommands, GameUpdates,
 };
 use actix_web::{
@@ -11,7 +11,11 @@ use actix_ws::Message;
 use futures::future::{pending, select_all};
 use log::{debug, error, info, warn};
 use rand::{rngs::StdRng, SeedableRng};
-use std::{collections::HashMap, net::ToSocketAddrs, time::Duration};
+use std::{
+    collections::HashMap,
+    net::ToSocketAddrs,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use tokio::{
     select,
     sync::{
@@ -93,11 +97,15 @@ impl GameLoop {
                 }
                 // process client commands
                 (client, command) = self.clients.next_command() => {
-                    self.process_command(client, command).await;
+                    if self.process_command(client, command).await {
+                        ticker.reset_immediately();
+                    }
                 }
                 // tick the game board
                 _ = ticker.tick() => {
-                    self.tick().await;
+                    if self.tick().await {
+                        // ticker.reset_after(Duration::from_secs(1000000));
+                    }
                 }
             }
         }
@@ -114,15 +122,23 @@ impl GameLoop {
                 board: self.board.clone(),
                 events: Vec::new(),
                 tick: self.tick,
+                timestamp: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
             })
             .await
             .unwrap();
         self.clients.push(client);
     }
 
-    async fn process_command(&mut self, client: usize, command: GameCommands) {
+    async fn process_command(&mut self, client: usize, command: GameCommands) -> bool {
         match command {
-            GameCommands::Input { direction, tick } => {
+            GameCommands::Input {
+                direction,
+                tick,
+                timestamp,
+            } => {
                 if tick != self.tick {
                     warn!(
                         "client missed game tick; expected {}, got {}",
@@ -131,9 +147,21 @@ impl GameLoop {
                     // return;
                 }
 
-                info!("client {} input: {:?} ({})", client, direction, self.tick);
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+                info!(
+                    "client {} input: {:?} ({}) ({}ms ping)",
+                    client,
+                    direction,
+                    self.tick,
+                    now - timestamp
+                );
 
                 self.queued_inputs.insert(client, direction);
+
+                false
             }
             GameCommands::RestartGame { board_settings } => {
                 self.board = Board::new(board_settings);
@@ -142,13 +170,19 @@ impl GameLoop {
                         tick: self.tick,
                         board: self.board.clone(),
                         events: Vec::new(),
+                        timestamp: SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64,
                     })
                     .await;
+
+                true
             }
         }
     }
 
-    async fn tick(&mut self) {
+    async fn tick(&mut self) -> bool {
         self.tick += 1;
 
         let mut inputs = [None; 4];
@@ -160,19 +194,27 @@ impl GameLoop {
             Ok(events) => events,
             Err(e) => {
                 error!("Board error: {}", e);
-                return;
+                return true;
             }
         };
+
+        let exit = events.contains(&BoardEvent::GameOver);
 
         self.clients
             .broadcast(GameUpdates::Ticked {
                 board: self.board.clone(),
                 events,
                 tick: self.tick,
+                timestamp: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
             })
             .await;
 
         debug!("ticked board ({}):\n{:?}", self.tick, self.board);
+
+        exit
     }
 }
 

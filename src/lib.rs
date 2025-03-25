@@ -8,8 +8,14 @@ pub mod server;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GameCommands {
-    Input { tick: u64, direction: Direction },
-    RestartGame { board_settings: BoardSettings },
+    Input {
+        tick: u64,
+        direction: Direction,
+        timestamp: u64,
+    },
+    RestartGame {
+        board_settings: BoardSettings,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,5 +24,6 @@ pub enum GameUpdates {
         tick: u64,
         board: Board,
         events: Vec<BoardEvent>,
+        timestamp: u64,
     },
 }
