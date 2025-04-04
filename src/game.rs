@@ -1,4 +1,7 @@
-use crate::{client::ClientConnection, GameState, GizmoSetting, Settings};
+use crate::{
+    client::{ClientConnection, NetworkUpdate},
+    GameState, GizmoSetting, Settings,
+};
 use bevy::{prelude::*, utils::HashMap};
 use bevy_snake::{
     ai::{cycle_basis, AIGizmos, SnakeAI, TreeSearch},
@@ -90,7 +93,7 @@ pub struct InputMap {
 }
 
 pub fn create_client(mut commands: Commands) {
-    commands.spawn(ClientConnection::default());
+    commands.spawn(ClientConnection::new("https://localhost:1234".to_string()));
 }
 
 pub fn reset_game(
@@ -108,7 +111,7 @@ pub fn reset_game(
     if !client_connections.is_empty() {
         client_connections
             .single_mut()
-            .send(GameCommands::RestartGame {
+            .send_command(GameCommands::RestartGame {
                 board_settings: settings.board_settings.clone(),
             });
     }
@@ -135,17 +138,15 @@ pub fn update_game(
         .unwrap()
         .as_millis() as u64;
 
-    let Ok(mut client_connection) = client_connections.get_single_mut() else {
-        return;
-    };
-    if let Some(game_updates) = client_connection.recv() {
+    let mut client_connection = client_connections.single_mut();
+    if let Some(game_updates) = client_connection.receive_update() {
         match game_updates {
-            GameUpdates::Ticked {
+            NetworkUpdate::Update(GameUpdates::Ticked {
                 board: new_board,
                 events,
                 tick,
                 timestamp,
-            } => {
+            }) => {
                 info!("received {} ({}ms ping)", tick, now - timestamp);
 
                 *board = new_board;
@@ -180,7 +181,7 @@ pub fn update_game(
                             timestamp: now,
                         };
                         info!("sending {:?} ({})", input, tick);
-                        client_connection.send(input);
+                        client_connection.send_command(input);
                     }
                 }
 
@@ -200,6 +201,12 @@ pub fn update_game(
                 if *game_state != GameState::InGame {
                     next_game_state.set(GameState::InGame);
                 }
+            }
+            NetworkUpdate::Connected => {
+                info!("connected");
+            }
+            NetworkUpdate::Disconnected => {
+                info!("disconnected");
             }
         }
     }
@@ -236,7 +243,7 @@ pub fn update_game(
                         timestamp: now,
                     };
                     info!("sending {:?} ({})", input, *server_tick);
-                    client_connection.send(input);
+                    client_connection.send_command(input);
                 }
 
                 // still add input to queue to mark that an input has been sent

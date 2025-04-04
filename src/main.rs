@@ -48,7 +48,7 @@ pub struct AnimationTimer(Timer);
 fn main() {
     // start server
     #[cfg(not(target_arch = "wasm32"))]
-    std::thread::spawn(|| bevy_snake::server::start_server(("0.0.0.0", 1234)));
+    std::thread::spawn(|| bevy_snake::server::start_server("[::]:1234"));
 
     App::new()
         .add_plugins((

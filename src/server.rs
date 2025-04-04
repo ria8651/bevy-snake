@@ -2,58 +2,125 @@ use crate::{
     board::{Board, BoardEvent, BoardSettings, Direction},
     GameCommands, GameUpdates,
 };
-use actix_web::{
-    middleware::Logger,
-    web::{self, Data, Payload},
-    App, HttpRequest, HttpResponse, HttpServer,
-};
-use actix_ws::Message;
 use futures::future::{pending, select_all};
-use log::{debug, error, info, warn};
+use log::*;
 use rand::{rngs::StdRng, SeedableRng};
 use std::{
     collections::HashMap,
-    net::ToSocketAddrs,
+    fs::File,
+    io::BufReader,
+    net::{SocketAddr, ToSocketAddrs},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     select,
-    sync::{
-        mpsc::{channel, Receiver, Sender},
-        Mutex,
-    },
-    time::{interval, Instant},
+    sync::mpsc::{channel, Receiver, Sender},
+    time::interval,
 };
 
 #[tokio::main]
 pub async fn start_server<A: ToSocketAddrs + Send + 'static>(ip: A) {
     let (client_tx, client_rx) = channel(1);
 
-    // start the web server
-    let web = tokio::spawn(async {
-        // build our application with a route
-        HttpServer::new(move || {
-            App::new()
-                .wrap(Logger::default())
-                .service(web::resource("/").to(|| async { "Hello world!" }))
-                .service(web::resource("/board").to(board))
-                .service(web::resource("/ws").to(snake_ws))
-                .app_data(Data::new(client_tx.clone()))
-        })
-        .bind(ip)
-        .unwrap()
-        .run()
-        .await
-        .unwrap();
-    });
-
     // start the game
     let game = tokio::spawn(game_loop(client_rx));
 
+    // start the web transport server
+    let web_transport = tokio::spawn(web_transport(
+        ip.to_socket_addrs().unwrap().next().unwrap(),
+        client_tx,
+    ));
+
     // exit if either the web server or game loop exits
     tokio::select! {
-        _ = web => { error!("web server exited"); }
+        _ = web_transport => { error!("web transport server exited"); }
         _ = game => { error!("game loop exited"); }
+    }
+}
+
+async fn web_transport(addr: SocketAddr, client_tx: Sender<Client>) {
+    // read the PEM certificate chain
+    let chain = File::open("cert/localhost.crt").expect("failed to open cert file");
+    let chain = rustls_pemfile::certs(&mut BufReader::new(chain))
+        .collect::<Result<_, _>>()
+        .expect("no cert found");
+
+    // read the PEM private key
+    let keys = File::open("cert/localhost.key").expect("failed to open key file");
+    let key = rustls_pemfile::private_key(&mut BufReader::new(keys))
+        .expect("failed to parse key file")
+        .expect("no private key found");
+
+    // create the web transport server
+    let mut server = web_transport_quinn::ServerBuilder::new()
+        .with_addr(addr)
+        .with_certificate(chain, key)
+        .unwrap();
+
+    info!("web transport server listening on {}", addr);
+
+    // accept incoming connections
+    while let Some(conn) = server.accept().await {
+        info!("accepted connection to {}", conn.url());
+
+        let session = match conn.ok().await {
+            Ok(session) => session,
+            Err(e) => {
+                error!("failed to accept connection: {}", e);
+                continue;
+            }
+        };
+
+        info!("started session");
+
+        let client_tx = client_tx.clone();
+        tokio::spawn(async move {
+            // create a new client
+            let (client, game_commands, mut game_updates) = Client::new();
+            client_tx.send(client).await.unwrap();
+
+            loop {
+                tokio::select! {
+                    // send game updates to the client
+                    Some(msg) = game_updates.recv() => {
+                        match session.open_uni().await {
+                            Ok(mut send) => {
+                                let msg = serde_json::to_string(&msg).unwrap();
+                                send.write_all(msg.as_bytes()).await.unwrap();
+                                trace!("sent: {}", msg);
+                            }
+                            Err(e) => {
+                                error!("failed to open uni stream: {}", e);
+                            }
+                        }
+                    }
+                    // receive commands from the client
+                    Ok(mut recv) = session.accept_uni() => {
+                        let buf = recv.read_to_end(2048).await.unwrap();
+                        trace!("received: {}", String::from_utf8_lossy(&buf));
+                        let command = serde_json::from_slice::<GameCommands>(&buf).unwrap();
+                        game_commands.send(command).await.unwrap();
+                    }
+                }
+            }
+        });
+
+        // // test sending a bidirectional stream
+        // let (mut send, mut recv) = session.accept_bi().await.unwrap();
+        // info!("accepted bidirectional stream");
+        // let buf = recv.read_to_end(1024).await.unwrap();
+        // info!("received: {}", String::from_utf8_lossy(&buf));
+        // send.write_all(b"bi hello").await.unwrap();
+        // info!("send: bi hello");
+
+        // // test receiving a bidirectional stream
+        // let (mut send, mut recv) = session.open_bi().await.unwrap();
+        // info!("opened bidirectional stream");
+        // send.write_all(b"other hello").await.unwrap();
+        // send.finish().unwrap();
+        // info!("sent: other hello");
+        // let buf = recv.read_to_end(1024).await.unwrap();
+        // info!("received: {}", String::from_utf8_lossy(&buf));
     }
 }
 
@@ -290,127 +357,145 @@ impl Client {
     }
 }
 
-async fn board(board: Data<Mutex<Option<Board>>>) -> HttpResponse {
-    HttpResponse::Ok().json(board.lock().await.clone())
-}
+// // start the web server
+// let web = tokio::spawn(async {
+//     // build our application with a route
+//     HttpServer::new(move || {
+//         App::new()
+//             .wrap(Logger::default())
+//             .service(web::resource("/").to(|| async { "Hello world!" }))
+//             .service(web::resource("/board").to(board))
+//             .service(web::resource("/ws").to(snake_ws))
+//             .app_data(Data::new(client_tx.clone()))
+//     })
+//     .bind(ip)
+//     .unwrap()
+//     .run()
+//     .await
+//     .unwrap();
+// });
 
-async fn snake_ws(
-    req: HttpRequest,
-    stream: Payload,
-    client_tx: Data<Sender<Client>>,
-) -> Result<HttpResponse, actix_web::Error> {
-    let (res, session, msg_stream) = actix_ws::handle(&req, stream)?;
+// async fn board(board: Data<Mutex<Option<Board>>>) -> HttpResponse {
+//     HttpResponse::Ok().json(board.lock().await.clone())
+// }
 
-    // spawn websocket handler (and don't await it) so that the response is returned immediately
-    actix_web::rt::spawn(snake_ws_handler(session, msg_stream, (**client_tx).clone()));
+// async fn snake_ws(
+//     req: HttpRequest,
+//     stream: Payload,
+//     client_tx: Data<Sender<Client>>,
+// ) -> Result<HttpResponse, actix_web::Error> {
+//     let (res, session, msg_stream) = actix_ws::handle(&req, stream)?;
 
-    Ok(res)
-}
+//     // spawn websocket handler (and don't await it) so that the response is returned immediately
+//     actix_web::rt::spawn(snake_ws_handler(session, msg_stream, (**client_tx).clone()));
 
-async fn snake_ws_handler(
-    mut session: actix_ws::Session,
-    mut msg_stream: actix_ws::MessageStream,
-    client_tx: Sender<Client>,
-) {
-    info!("web socket connected");
+//     Ok(res)
+// }
 
-    let mut last_heartbeat = Instant::now();
-    let mut interval = interval(Duration::from_secs(5));
+// async fn snake_ws_handler(
+//     mut session: actix_ws::Session,
+//     mut msg_stream: actix_ws::MessageStream,
+//     client_tx: Sender<Client>,
+// ) {
+//     info!("web socket connected");
 
-    let (client, game_commands, mut game_updates) = Client::new();
-    client_tx.send(client).await.unwrap();
+//     let mut last_heartbeat = Instant::now();
+//     let mut interval = interval(Duration::from_secs(5));
 
-    let reason = loop {
-        // create "next client timeout check" future
-        let tick = interval.tick();
+//     let (client, game_commands, mut game_updates) = Client::new();
+//     client_tx.send(client).await.unwrap();
 
-        tokio::select! {
-            // received a board update from the game
-            update = game_updates.recv() => {
-                match update {
-                    Some(game_update) => {
-                        if let Err(e) = session.text(serde_json::to_string(&game_update).unwrap()).await {
-                            error!("{}", e);
-                            break None;
-                        }
-                    }
+//     let reason = loop {
+//         // create "next client timeout check" future
+//         let tick = interval.tick();
 
-                    None => {
-                        break None;
-                    }
-                }
-            }
+//         tokio::select! {
+//             // received a board update from the game
+//             update = game_updates.recv() => {
+//                 match update {
+//                     Some(game_update) => {
+//                         if let Err(e) = session.text(serde_json::to_string(&game_update).unwrap()).await {
+//                             error!("{}", e);
+//                             break None;
+//                         }
+//                     }
 
-            // received message from WebSocket client
-            msg = msg_stream.recv() => {
-                match msg {
-                    Some(Ok(msg)) => match msg {
-                        Message::Text(text) => {
-                            let command = match serde_json::from_str::<GameCommands>(&text) {
-                                Ok(input) => input,
-                                Err(err) => {
-                                    session.text(format!("invalid input: {}", err)).await.unwrap();
-                                    error!("{}", err);
-                                    break None;
-                                }
-                            };
+//                     None => {
+//                         break None;
+//                     }
+//                 }
+//             }
 
-                            if let Err(e) = game_commands.send(command).await {
-                                error!("{}", e);
-                                break None;
-                            }
-                        }
+//             // received message from WebSocket client
+//             msg = msg_stream.recv() => {
+//                 match msg {
+//                     Some(Ok(msg)) => match msg {
+//                         Message::Text(text) => {
+//                             let command = match serde_json::from_str::<GameCommands>(&text) {
+//                                 Ok(input) => input,
+//                                 Err(err) => {
+//                                     session.text(format!("invalid input: {}", err)).await.unwrap();
+//                                     error!("{}", err);
+//                                     break None;
+//                                 }
+//                             };
 
-                        Message::Binary(_) => {
-                            session.text("i dont want your binary data").await.unwrap();
-                        }
+//                             if let Err(e) = game_commands.send(command).await {
+//                                 error!("{}", e);
+//                                 break None;
+//                             }
+//                         }
 
-                        Message::Close(reason) => {
-                            break reason;
-                        }
+//                         Message::Binary(_) => {
+//                             session.text("i dont want your binary data").await.unwrap();
+//                         }
 
-                        Message::Ping(bytes) => {
-                            last_heartbeat = Instant::now();
-                            session.pong(&bytes).await.ok();
-                        }
+//                         Message::Close(reason) => {
+//                             break reason;
+//                         }
 
-                        Message::Pong(_) => {
-                            last_heartbeat = Instant::now();
-                        }
+//                         Message::Ping(bytes) => {
+//                             last_heartbeat = Instant::now();
+//                             session.pong(&bytes).await.ok();
+//                         }
 
-                        Message::Continuation(_) => {
-                            warn!("no support for continuation frames");
-                        }
+//                         Message::Pong(_) => {
+//                             last_heartbeat = Instant::now();
+//                         }
 
-                        Message::Nop => {}
-                    }
+//                         Message::Continuation(_) => {
+//                             warn!("no support for continuation frames");
+//                         }
 
-                    Some(Err(err)) => {
-                        error!("{}", err);
-                        break None;
-                    }
+//                         Message::Nop => {}
+//                     }
 
-                    None => break None,
-                }
-            }
+//                     Some(Err(err)) => {
+//                         error!("{}", err);
+//                         break None;
+//                     }
 
-            // heartbeat interval ticked
-            _ = tick => {
-                // if no heartbeat ping/pong received recently, close the connection
-                if Instant::now().duration_since(last_heartbeat) > Duration::from_secs(10) {
-                    info!("client has not sent heartbeat in over 10s; disconnecting");
+//                     None => break None,
+//                 }
+//             }
 
-                    break None;
-                }
+//             // heartbeat interval ticked
+//             _ = tick => {
+//                 // if no heartbeat ping/pong received recently, close the connection
+//                 if Instant::now().duration_since(last_heartbeat) > Duration::from_secs(10) {
+//                     info!("client has not sent heartbeat in over 10s; disconnecting");
 
-                // send heartbeat ping
-                let _ = session.ping(b"").await;
-            }
-        }
-    };
+//                     break None;
+//                 }
 
-    // attempt to close connection gracefully
-    let _ = session.close(reason).await;
+//                 // send heartbeat ping
+//                 let _ = session.ping(b"").await;
+//             }
+//         }
+//     };
 
-    info!("disconnected");
-}
+//     // attempt to close connection gracefully
+//     let _ = session.close(reason).await;
+
+//     info!("disconnected");
+// }
