@@ -13,6 +13,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
+    io::AsyncReadExt,
     select,
     sync::mpsc::{channel, Receiver, Sender},
     time::interval,
@@ -91,15 +92,23 @@ async fn web_transport(addr: SocketAddr, client_tx: Sender<Client>) {
                             }
                             Err(e) => {
                                 error!("failed to open uni stream: {}", e);
+                                break;
                             }
                         }
                     }
                     // receive commands from the client
                     Ok(mut recv) = session.accept_uni() => {
-                        let buf = recv.read_to_end(2048).await.unwrap();
-                        trace!("received: {}", String::from_utf8_lossy(&buf));
-                        let command = serde_json::from_slice::<GameCommands>(&buf).unwrap();
+                        let mut buf = String::new();
+                        recv.read_to_string(&mut buf).await.unwrap();
+                        trace!("received: {}", buf);
+                        let command = serde_json::from_str(&buf).unwrap();
                         game_commands.send(command).await.unwrap();
+                    }
+                    // if the session is closed, exit the loop
+                    else => {
+                        info!("session closed");
+
+                        break;
                     }
                 }
             }
@@ -252,7 +261,7 @@ impl GameLoop {
     async fn tick(&mut self) -> bool {
         self.tick += 1;
 
-        let mut inputs = [None; 4];
+        let mut inputs = [None; 16];
         for (client, direction) in self.queued_inputs.drain() {
             inputs[client] = Some(direction);
         }

@@ -46,10 +46,6 @@ pub struct GameTime(f32);
 pub struct AnimationTimer(Timer);
 
 fn main() {
-    // start server
-    #[cfg(not(target_arch = "wasm32"))]
-    std::thread::spawn(|| bevy_snake::server::start_server("[::]:1234"));
-
     App::new()
         .add_plugins((
             DefaultPlugins.set(WindowPlugin {
@@ -81,9 +77,15 @@ fn main() {
         })
         .insert_resource(GameTime::default())
         .init_state::<GameState>()
+        .add_systems(Startup, start_server)
         .add_systems(Update, game_state.after(game::update_game))
         .add_systems(Update, settings_system.run_if(in_state(GameState::InGame)))
         .run();
+}
+
+fn start_server() {
+    // #[cfg(not(target_arch = "wasm32"))]
+    // std::thread::spawn(|| bevy_snake::server::start_server("127.0.0.1:1234"));
 }
 
 fn game_state(

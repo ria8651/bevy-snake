@@ -93,7 +93,7 @@ pub struct InputMap {
 }
 
 pub fn create_client(mut commands: Commands) {
-    commands.spawn(ClientConnection::new("https://localhost:1234".to_string()));
+    commands.spawn(ClientConnection::new("https://118.93.89.163:1234".to_string()));
 }
 
 pub fn reset_game(
@@ -279,13 +279,13 @@ fn ai_system(
         let mut new_ai_gizmos = AIGizmos::default();
 
         if let Ok(dir) = ai.chose_move(board.as_ref(), &mut Some(&mut new_ai_gizmos)) {
-            *ai_gizmos = new_ai_gizmos;
-
             let input_queue = &mut input_queues[0].input_queue;
             if settings.ai && input_queue.is_empty() {
                 input_queue.push_back(dir);
             }
         }
+
+        *ai_gizmos = new_ai_gizmos;
     }
 
     if let GizmoSetting::CycleBasis = settings.gizmos {

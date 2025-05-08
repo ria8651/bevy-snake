@@ -1,6 +1,6 @@
-use async_channel::{Receiver, Sender};
 use bevy::prelude::*;
 use bevy_snake::{GameCommands, GameUpdates};
+use tokio::sync::mpsc::{channel, Receiver, Sender};
 
 pub struct ClientPlugin;
 
@@ -30,8 +30,8 @@ pub struct ClientConnection {
 
 impl ClientConnection {
     pub fn new(url: String) -> Self {
-        let (update_tx, update_rx) = async_channel::unbounded();
-        let (command_tx, command_rx) = async_channel::unbounded();
+        let (update_tx, update_rx) = channel(100); // async_channel::unbounded();
+        let (command_tx, command_rx) = channel(100); // async_channel::unbounded();
         Self {
             command_tx,
             command_rx: Some(command_rx),
@@ -56,7 +56,7 @@ fn start_new_wt_tasks(
     #[cfg(not(target_arch = "wasm32"))] tokio_runtime: Res<TokioRuntime>,
 ) {
     let mut connection_entity = q.get_mut(trigger.entity()).unwrap();
-    let command_rx = connection_entity.command_rx.take().unwrap();
+    let mut command_rx = connection_entity.command_rx.take().unwrap();
     let update_tx = connection_entity.update_tx.take().unwrap();
     let url = connection_entity.url.clone();
     info!("Starting new wt task connecting to {}", url);
@@ -67,7 +67,7 @@ fn start_new_wt_tasks(
         //     .unwrap()
         //     .read_to_string(&mut text)
         //     .unwrap();
-        let text = "242f9193ad76ef7687247b30b0bda6e3cd1ec23bf57872225d0a96f24045d0a3";
+        let text = "ef6aaeb40dc97fc7f142fc7a4044436ebf157cb29840f508945c861fc2001c0c";
         let hash = decode_hex(&text.split_whitespace().next().unwrap());
 
         // create a new client
@@ -92,17 +92,18 @@ fn start_new_wt_tasks(
 
         // send and receive messages
         loop {
+            info!("waiting for command");
             tokio::select! {
                 cmd = command_rx.recv() => {
                     match cmd {
-                        Ok(cmd) => {
+                        Some(cmd) => {
                             let msg = serde_json::to_vec(&cmd).unwrap();
                             trace!("sending command: {}", String::from_utf8_lossy(&msg));
                             let mut send = session.open_uni().await.unwrap();
                             send.write(&msg).await.unwrap();
                         }
-                        Err(e) => {
-                            warn!("command channel closed: {:?}", e);
+                        None => {
+                            warn!("command channel closed");
                             break;
                         }
                     }
@@ -110,9 +111,11 @@ fn start_new_wt_tasks(
                 msg = session.accept_uni() => {
                     match msg {
                         Ok(mut recv) => {
-                            let msg = recv.read(4096).await.unwrap().unwrap();
-                            trace!("got message: {}", String::from_utf8_lossy(&msg));
-                            let update = serde_json::from_slice::<GameUpdates>(&msg).unwrap();
+                            let mut buf = Vec::new();
+                            while let Some(_) = recv.read_buf(&mut buf).await.unwrap() {
+                                // read until EOF
+                            }
+                            let update = serde_json::from_slice::<GameUpdates>(&buf).unwrap();
                             update_tx.send(NetworkUpdate::Update(update)).await.unwrap();
                         }
                         Err(e) => {
