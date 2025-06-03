@@ -1,6 +1,6 @@
 use crate::{
     client::{ClientConnection, NetworkUpdate},
-    GameState, GizmoSetting, Settings,
+    GizmoSetting, Settings,
 };
 use bevy::{prelude::*, utils::HashMap};
 use bevy_snake::{
@@ -63,7 +63,7 @@ impl Plugin for GamePlugin {
                 },
             ]))
             .add_systems(Startup, create_client)
-            .add_systems(OnEnter(GameState::InGame), reset_game)
+            .add_systems(Update, reset_game)
             .add_systems(Update, update_game);
     }
 }
@@ -101,19 +101,22 @@ pub fn reset_game(
     mut input_queues: ResMut<SnakeInputs>,
     mut client_connections: Query<&mut ClientConnection>,
     settings: Res<Settings>,
+    keys: Res<ButtonInput<KeyCode>>,
 ) {
-    *board = Board::new(settings.board_settings);
+    if keys.just_pressed(KeyCode::Space) {
+        *board = Board::new(settings.board_settings);
 
-    for SnakeInput { input_queue, .. } in input_queues.iter_mut() {
-        input_queue.clear();
-    }
+        for SnakeInput { input_queue, .. } in input_queues.iter_mut() {
+            input_queue.clear();
+        }
 
-    if !client_connections.is_empty() {
-        client_connections
-            .single_mut()
-            .send_command(GameCommands::RestartGame {
-                board_settings: settings.board_settings.clone(),
-            });
+        if !client_connections.is_empty() {
+            client_connections
+                .single_mut()
+                .send_command(GameCommands::RestartGame {
+                    board_settings: settings.board_settings.clone(),
+                });
+        }
     }
 }
 
@@ -125,9 +128,7 @@ pub fn update_game(
     mut timer: ResMut<TickTimer>,
     mut board: ResMut<Board>,
     mut points: ResMut<Points>,
-    mut next_game_state: ResMut<NextState<GameState>>,
     mut client_connections: Query<&mut ClientConnection>,
-    game_state: Res<State<GameState>>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     mut server_tick: Local<u64>,
@@ -153,8 +154,7 @@ pub fn update_game(
                 for event in events {
                     match event {
                         BoardEvent::GameOver => {
-                            // info!("game over");
-                            next_game_state.set(GameState::GameOver);
+                            info!("game over");
                             return;
                         }
                         BoardEvent::SnakeDamaged { .. } => {
@@ -197,10 +197,6 @@ pub fn update_game(
                 //     };
                 //     game_commands.send(input).unwrap();
                 // }
-
-                if *game_state != GameState::InGame {
-                    next_game_state.set(GameState::InGame);
-                }
             }
             NetworkUpdate::Connected => {
                 info!("connected");

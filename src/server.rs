@@ -240,6 +240,8 @@ impl GameLoop {
                 false
             }
             GameCommands::RestartGame { board_settings } => {
+                info!("restarting game");
+
                 self.board = Board::new(board_settings);
                 self.clients
                     .broadcast(GameUpdates::Ticked {

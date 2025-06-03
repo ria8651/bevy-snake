@@ -67,7 +67,7 @@ fn start_new_wt_tasks(
         //     .unwrap()
         //     .read_to_string(&mut text)
         //     .unwrap();
-        let text = "ef6aaeb40dc97fc7f142fc7a4044436ebf157cb29840f508945c861fc2001c0c";
+        let text = "c97e0073fd2fa1aeafd3b16124f0655d87379ebca5704e6eada0a464d541b75b";
         let hash = decode_hex(&text.split_whitespace().next().unwrap());
 
         // create a new client

@@ -1,4 +1,4 @@
-use crate::{game::Points, GameState, GizmoSetting, Settings};
+use crate::{game::Points, GizmoSetting, Settings};
 use bevy::prelude::*;
 use bevy_inspector_egui::{
     bevy_egui::{EguiContexts, EguiPlugin},
@@ -19,7 +19,6 @@ impl Plugin for UiPlugin {
 fn ui_system(
     mut contexts: EguiContexts,
     mut settings: ResMut<Settings>,
-    mut next_game_state: ResMut<NextState<GameState>>,
     mut last_score: Local<usize>,
     points: Res<Points>,
     board: Res<Board>,
@@ -100,10 +99,6 @@ fn ui_system(
         ui.checkbox(&mut settings.ai, "AI");
         ui.checkbox(&mut settings.walls, "Walls");
         ui.checkbox(&mut settings.walls_debug, "Walls debug");
-
-        if ui.button("New Game").clicked() {
-            next_game_state.set(GameState::InGame);
-        }
 
         ui.label("Controls");
         ui.label("Snake 1: WASD to move, LShift to shoot");

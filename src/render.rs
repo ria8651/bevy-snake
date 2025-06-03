@@ -1,6 +1,6 @@
 use crate::{
     game::{SnakeInputs, TickTimer},
-    GameState, Settings,
+    Settings,
 };
 use bevy::{prelude::*, render::camera::ScalingMode, utils::HashMap};
 use bevy_snake::board::{Board, Cell};
@@ -9,12 +9,8 @@ pub struct BoardRenderPlugin;
 
 impl Plugin for BoardRenderPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup).add_systems(
-            Update,
-            draw_board
-                .after(crate::game_state)
-                .run_if(in_state(GameState::InGame)),
-        );
+        app.add_systems(Startup, setup)
+            .add_systems(Update, draw_board.after(crate::game_state));
     }
 }
 

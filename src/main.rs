@@ -6,12 +6,12 @@ mod game;
 mod render;
 mod ui;
 
-#[derive(States, Default, Debug, Hash, PartialEq, Eq, Clone)]
-pub enum GameState {
-    #[default]
-    InGame,
-    GameOver,
-}
+// #[derive(States, Default, Debug, Hash, PartialEq, Eq, Clone)]
+// pub enum GameState {
+//     #[default]
+//     InGame,
+//     GameOver,
+// }
 
 #[derive(PartialEq, Eq)]
 pub enum Speed {
@@ -40,8 +40,6 @@ pub struct Settings {
     pub walls_debug: bool,
 }
 
-#[derive(Resource, Default)]
-pub struct GameTime(f32);
 #[derive(Component, Deref, DerefMut)]
 pub struct AnimationTimer(Timer);
 
@@ -75,11 +73,8 @@ fn main() {
             walls: false,
             walls_debug: false,
         })
-        .insert_resource(GameTime::default())
-        .init_state::<GameState>()
         .add_systems(Startup, start_server)
         .add_systems(Update, game_state.after(game::update_game))
-        .add_systems(Update, settings_system.run_if(in_state(GameState::InGame)))
         .run();
 }
 
@@ -88,40 +83,10 @@ fn start_server() {
     // std::thread::spawn(|| bevy_snake::server::start_server("127.0.0.1:1234"));
 }
 
-fn game_state(
-    mut next_game_state: ResMut<NextState<GameState>>,
-    mut exit: EventWriter<AppExit>,
-    game_state: Res<State<GameState>>,
-    keys: Res<ButtonInput<KeyCode>>,
-) {
-    match game_state.get() {
-        GameState::GameOver => {
-            if keys.just_pressed(KeyCode::Space) {
-                next_game_state.set(GameState::InGame);
-            }
-        }
-        _ => {}
-    }
-
+fn game_state(mut exit: EventWriter<AppExit>, keys: Res<ButtonInput<KeyCode>>) {
     if keys.just_pressed(KeyCode::KeyW)
         && keys.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight])
     {
         exit.send(AppExit::Success);
-    }
-}
-
-fn settings_system(
-    mut settings: ResMut<Settings>,
-    keys: Res<ButtonInput<KeyCode>>,
-    mut game_time: ResMut<GameTime>,
-    time: Res<Time>,
-) {
-    if keys.just_pressed(KeyCode::KeyI) {
-        settings.interpolation = !settings.interpolation;
-    }
-
-    game_time.0 += time.delta_secs();
-    if settings.tps_ramp {
-        settings.tps = (game_time.0 * 0.1 + 5.0).clamp(5.0, 7.0);
     }
 }
