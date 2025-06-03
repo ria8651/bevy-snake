@@ -92,7 +92,6 @@ fn start_new_wt_tasks(
 
         // send and receive messages
         loop {
-            info!("waiting for command");
             tokio::select! {
                 cmd = command_rx.recv() => {
                     match cmd {

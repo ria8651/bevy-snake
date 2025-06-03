@@ -368,6 +368,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-select"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bac3430a0dec743094f26f0277c2cb2f78976b4269c1648c1f0cd18d70f34432"
+
+[[package]]
 name = "async-task"
 version = "4.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -522,7 +528,7 @@ dependencies = [
 name = "bevy-snake"
 version = "0.2.0"
 dependencies = [
- "async-channel",
+ "async-select",
  "bevy",
  "bevy-inspector-egui",
  "colog",

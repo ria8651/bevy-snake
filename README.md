@@ -40,3 +40,14 @@ Licensed under either of
 * MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
 
 at your option.
+
+```js
+const transport = new WebTransport("https://bink.eu.org:1234", {
+  serverCertificateHashes: [
+    {
+      algorithm: "sha-256",
+      value: new Uint8Array('ef6aaeb40dc97fc7f142fc7a4044436ebf157cb29840f508945c861fc2001c0c'.match(/../g).map(h=>parseInt(h,16))).buffer,
+    },
+  ],
+});
+```
