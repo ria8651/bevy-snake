@@ -4,6 +4,7 @@ use effects::ExplosionEv;
 
 mod ai;
 mod board;
+mod cycles;
 mod effects;
 mod game;
 mod render;

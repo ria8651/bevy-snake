@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::ops::{Index, IndexMut};
 use thiserror::Error;
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub enum Cell {
     Empty,
     Wall,
@@ -17,7 +17,7 @@ pub enum Cell {
     Apple { natural: bool }, // natural apples respawn
 }
 
-#[derive(Resource, Component, Clone, Serialize)]
+#[derive(Resource, Component, Clone, PartialEq, Serialize)]
 pub struct Board {
     cells: Vec<Cell>,
     #[serde(skip)]
