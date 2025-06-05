@@ -143,68 +143,6 @@ pub fn cycle_basis(graph: &Vec<Vec<usize>>) -> Vec<Vec<usize>> {
 
 impl SnakeAI for TreeSearch {
     fn chose_move(&self, board: &Board, gizmos: &mut AIGizmos) -> Result<Direction, ()> {
-        // let mut cycles: Vec<Vec<IVec2>> = Vec::new();
-        // let mut graph_nodes: HashSet<IVec2> = board
-        //     .cells()
-        //     .filter_map(|(pos, cell)| {
-        //         if matches!(cell, Cell::Empty | Cell::Apple { .. }) {
-        //             Some(pos)
-        //         } else {
-        //             None
-        //         }
-        //     })
-        //     .collect();
-        // while !graph_nodes.is_empty() {
-        //     let root = {
-        //         let root = *graph_nodes.iter().next().unwrap();
-        //         graph_nodes.remove(&root);
-        //         root
-        //     };
-        //     let mut stack = vec![root];
-        //     let mut parent = HashMap::from([(root, None::<IVec2>)]);
-
-        // }
-
-        // // find a spanning tree of the board
-        // let mut root = None;
-        // for (pos, cell) in board.cells() {
-        //     if !matches!(cell, Cell::Wall) {
-        //         root = Some(pos);
-        //         break;
-        //     }
-        // }
-        // let root = root.expect("no empty cells in board");
-
-        // let mut queue = VecDeque::from([root]);
-        // let mut parent = HashMap::from([(root, None)]);
-        // while let Some(pos) = queue.pop_front() {
-        //     for dir in Direction::ALL {
-        //         let next_pos = pos + dir.as_vec2();
-
-        //         if !board.in_bounds(next_pos) {
-        //             continue;
-        //         }
-
-        //         if parent.contains_key(&next_pos) {
-        //             continue;
-        //         }
-
-        //         if !matches!(board.get(next_pos), Ok(Cell::Wall)) {
-        //             parent.insert(next_pos, Some(pos));
-        //             queue.push_back(next_pos);
-        //         }
-        //     }
-        // }
-
-        // // show spanning tree in blue
-        // let blue = Color::srgb(0.0, 0.0, 1.0);
-        // for (pos, parent_pos) in parent.iter() {
-        //     if let Some(parent_pos) = parent_pos {
-        //         gizmos.arrows.push((*parent_pos, *pos, blue));
-        //     }
-        // }
-        // //
-
         // find cycle basis of the board
         let mut nodes = HashMap::new();
         let mut graph = Vec::new();
@@ -224,57 +162,204 @@ impl SnakeAI for TreeSearch {
         }
         let cycles = cycle_basis(&graph);
 
-        // show cycles
-        let points: HashMap<_, _> = nodes.iter().map(|(pos, index)| (*index, *pos)).collect();
-        for (index, cycle) in cycles.iter().enumerate() {
-            let color = Color::srgb(
-                (index as f32 / cycles.len() as f32).min(1.0),
-                0.0,
-                1.0 - (index as f32 / cycles.len() as f32).min(1.0),
-            );
-            let com = cycle
-                .iter()
-                .fold(Vec2::ZERO, |acc, &index| acc + points[&index].as_vec2())
-                / cycle.len() as f32;
-            let points = cycle
-                .iter()
-                .map(|&index| points[&index].as_vec2() - (points[&index].as_vec2() - com) * 0.1)
-                .collect::<Vec<_>>();
-            for i in 0..cycle.len() {
-                let start = points[i];
-                let end = points[(i + 1) % cycle.len()];
-                gizmos.arrows.push((start, end, color));
-            }
-        }
-
-        // combine cycles
-        let mut edges = HashMap::new();
-        let mut index = 0;
-        for (cell, neighbors) in graph.iter().enumerate() {
+        // find the edges of the graph
+        let mut edges = Vec::new();
+        for (index, neighbors) in graph.iter().enumerate() {
             for &neighbor in neighbors {
-                if neighbor < cell {
-                    edges.insert((neighbor, cell), index);
-                    index += 1;
+                if neighbor < index {
+                    edges.push((neighbor, index));
                 }
             }
         }
-        let mut edge_cycles = Vec::new();
-        for cycle in cycles.iter() {
-            let mut edge_cycle = Vec::new();
-            for i in 0..cycle.len() {
-                let mut a = cycle[i];
-                let mut b = cycle[(i + 1) % cycle.len()];
-                if a > b {
-                    std::mem::swap(&mut a, &mut b);
+        let find_edge_index = |a: usize, b: usize| {
+            edges
+                .iter()
+                .position(|&(x, y)| (x == a && y == b) || (x == b && y == a))
+        };
+        let mut cycle_edge_masks: Vec<Vec<bool>> = cycles
+            .iter()
+            .map(|cycle| {
+                let mut mask = vec![false; edges.len()];
+                for i in 0..cycle.len() {
+                    let mut a = cycle[i];
+                    let mut b = cycle[(i + 1) % cycle.len()];
+                    if a > b {
+                        std::mem::swap(&mut a, &mut b);
+                    }
+                    if let Some(index) = find_edge_index(a, b) {
+                        mask[index] = true;
+                    }
                 }
-                edge_cycle.push(*edges.get(&(a.min(b), a.max(b))).unwrap());
+                mask
+            })
+            .collect();
+
+        let print_edge_mask = |mask: &[bool]| {
+            for y in 0..board.height() {
+                if y > 0 {
+                    for x in 0..board.width() {
+                        if x > 0 {
+                            print!(" ");
+                        }
+                        let pos = IVec2::new(x as i32, y as i32);
+                        if let Some(node) = nodes.get(&pos) {
+                            let pos_last = IVec2::new(x as i32, y as i32 - 1);
+                            if let Some(node_last) = nodes.get(&pos_last) {
+                                let edge_index = find_edge_index(*node, *node_last);
+                                if let Some(index) = edge_index {
+                                    if mask[index] {
+                                        print!("|");
+                                    } else {
+                                        print!(" ");
+                                    }
+                                } else {
+                                    print!(" ");
+                                }
+                            } else {
+                                print!(" ");
+                            }
+                        } else {
+                            print!(" ");
+                        }
+                    }
+                }
+                println!();
+                for x in 0..board.width() {
+                    let pos = IVec2::new(x as i32, y as i32);
+                    if let Some(node) = nodes.get(&pos) {
+                        if x > 0 {
+                            let pos_last = IVec2::new(x as i32 - 1, y as i32);
+                            if let Some(node_last) = nodes.get(&pos_last) {
+                                let edge_index = find_edge_index(*node, *node_last);
+                                if let Some(index) = edge_index {
+                                    if mask[index] {
+                                        print!("-");
+                                    } else {
+                                        print!(" ");
+                                    }
+                                } else {
+                                    print!(" ");
+                                }
+                            } else {
+                                print!(" ");
+                            }
+                        }
+
+                        print!(".");
+                    } else {
+                        if x > 0 {
+                            print!(" ");
+                        }
+                        print!("#");
+                    }
+                }
+                println!();
             }
-            edge_cycles.push(edge_cycle);
+        };
+
+        // find how edges are connected through vertices
+        let mut edge_connections: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (i, &(a, b)) in edges.iter().enumerate() {
+            for (j, &(k, l)) in edges.iter().enumerate() {
+                if i != j && (a == k || b == k || a == l || b == l) {
+                    edge_connections.entry(i).or_default().push(j);
+                }
+            }
         }
 
-        let snakes = board.snakes();
-        let snake = snakes.get(&0).ok_or(())?;
+        // combine all cycles
+        let mut combined_cycle = cycle_edge_masks.pop().unwrap();
+        println!("Initial combined cycles:");
+        print_edge_mask(&combined_cycle);
+        loop {
+            let mut some_valid = false;
+            for i in 0..cycle_edge_masks.len() {
+                let mut valid = false;
+                let mut temp = vec![false; edges.len()];
+                for j in 0..edges.len() {
+                    temp[j] = cycle_edge_masks[i][j] != combined_cycle[j];
 
+                    // must overlap with combined cycles
+                    if cycle_edge_masks[i][j] && combined_cycle[j] {
+                        valid = true;
+                    }
+                }
+
+                if !valid {
+                    continue;
+                }
+
+                // cycle is valid if all parts are connected
+                let mut visited = vec![false; edges.len()];
+                let first = temp.iter().position(|&x| x);
+                if let Some(first) = first {
+                    let mut stack = vec![first];
+                    visited[first] = true;
+                    while let Some(index) = stack.pop() {
+                        let mut neighbors = 0;
+                        for &neighbor in edge_connections.get(&index).unwrap_or(&Vec::new()) {
+                            if !visited[neighbor] && temp[neighbor] {
+                                visited[neighbor] = true;
+                                stack.push(neighbor);
+                            }
+                            if temp[neighbor] {
+                                neighbors += 1;
+                            }
+                        }
+                        if neighbors != 2 {
+                            valid = false;
+                            break;
+                        }
+                    }
+                }
+
+                if valid && visited == temp {
+                    some_valid = true;
+                    combined_cycle = temp;
+                    cycle_edge_masks.remove(i);
+                    break;
+                }
+            }
+            if !some_valid {
+                break;
+            }
+        }
+        // display combined cycle
+        for (i, &value) in combined_cycle.iter().enumerate() {
+            if value {
+                let (a, b) = edges[i];
+                let start = nodes.iter().find(|&(_, &index)| index == a).unwrap().0;
+                let end = nodes.iter().find(|&(_, &index)| index == b).unwrap().0;
+                gizmos
+                    .arrows
+                    .push((start.as_vec2(), end.as_vec2(), Color::srgb(1.0, 0.0, 0.0)));
+            }
+        }
+
+        // show cycles
+        // let points: HashMap<_, _> = nodes.iter().map(|(pos, index)| (*index, *pos)).collect();
+        // for (index, cycle) in cycles.iter().enumerate() {
+        //     let color = Color::srgb(
+        //         (index as f32 / cycles.len() as f32).min(1.0),
+        //         0.0,
+        //         1.0 - (index as f32 / cycles.len() as f32).min(1.0),
+        //     );
+        //     let com = cycle
+        //         .iter()
+        //         .fold(Vec2::ZERO, |acc, &index| acc + points[&index].as_vec2())
+        //         / cycle.len() as f32;
+        //     let points = cycle
+        //         .iter()
+        //         .map(|&index| points[&index].as_vec2() - (points[&index].as_vec2() - com) * 0.1)
+        //         .collect::<Vec<_>>();
+        //     for i in 0..cycle.len() {
+        //         let start = points[i];
+        //         let end = points[(i + 1) % cycle.len()];
+        //         gizmos.arrows.push((start, end, color));
+        //     }
+        // }
+
+        // acutual game logic
         struct BoardEval {
             board: Board,
             score: f32,
@@ -464,7 +549,38 @@ impl TreeSearch {
 
 #[derive(Default)]
 struct AIGizmos {
+    steps: u32,
     lines: Vec<(IVec2, IVec2, Color)>,
     arrows: Vec<(Vec2, Vec2, Color)>,
     points: Vec<(IVec2, Color)>,
+}
+
+mod cycles {
+    use crate::board::Board;
+
+    pub struct Graph {
+        pub graph: Vec<Vec<usize>>,
+    }
+
+    impl Graph {
+        pub fn from_board(board: &Board) -> Self {
+            let mut nodes = std::collections::HashMap::new();
+            let mut graph = Vec::new();
+            for (pos, cell) in board.cells() {
+                if !matches!(cell, crate::board::Cell::Wall) {
+                    nodes.insert(pos, nodes.len());
+                    graph.push(Vec::new());
+                }
+            }
+            for (node, index) in nodes.iter() {
+                for dir in crate::board::Direction::ALL {
+                    let next_node = *node + dir.as_vec2();
+                    if let Some(next_index) = nodes.get(&next_node) {
+                        graph[*index].push(*next_index);
+                    }
+                }
+            }
+            Graph { graph }
+        }
+    }
 }
