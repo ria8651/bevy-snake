@@ -112,6 +112,44 @@ impl Board {
         board
     }
 
+    pub fn from_str(s: &str) -> Result<Self, String> {
+        let lines: Vec<_> = s.lines().collect();
+        if lines.is_empty() {
+            return Err("Input string is empty".to_string());
+        }
+        let width = lines[0].chars().count();
+        let height = lines.len();
+
+        let mut cells = Vec::with_capacity(width * height);
+        for line in lines {
+            if line.chars().count() != width {
+                return Err("Inconsistent line length".to_string());
+            }
+            for c in line.chars() {
+                cells.push(match c {
+                    ' ' => Cell::Empty,
+                    '#' => Cell::Wall,
+                    'o' => Cell::Apple { natural: true },
+                    _ => {
+                        if c.is_digit(10) {
+                            Cell::Empty
+                        } else {
+                            return Err(format!("Unknown character: {}", c));
+                        }
+                    }
+                });
+            }
+        }
+
+        Ok(Self {
+            cells,
+            rng: StdRng::from_entropy(),
+            width,
+            height,
+            apples_eaten: 0,
+        })
+    }
+
     pub fn get(&self, pos: IVec2) -> Result<Cell, CellError> {
         if !self.in_bounds(pos) {
             return Err(CellError::OutOfBounds);
@@ -448,6 +486,10 @@ impl Board {
         snake_ids.sort_unstable();
         snake_ids.dedup();
         snake_ids.len()
+    }
+
+    pub fn score(&self) -> usize {
+        self.apples_eaten
     }
 }
 

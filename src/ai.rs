@@ -22,7 +22,7 @@ impl Plugin for AIPlugin {
 fn ai_system(
     mut input_queues: ResMut<SnakeInputs>,
     mut gizmos: Gizmos,
-    mut ai_gizmos: Local<AIGizmos>,
+    mut ai_gizmos: Local<Option<AIGizmos>>,
     settings: Res<Settings>,
     board: Res<Board>,
     tick_timer: Res<TickTimer>,
@@ -34,7 +34,11 @@ fn ai_system(
             max_time: Duration::from_millis(5),
         };
 
-        let mut new_ai_gizmos = AIGizmos::default();
+        let mut new_ai_gizmos = if settings.gizmos {
+            Some(AIGizmos::default())
+        } else {
+            None
+        };
 
         if let Ok(dir) = ai.chose_move(board.as_ref(), &mut new_ai_gizmos) {
             *ai_gizmos = new_ai_gizmos;
@@ -46,7 +50,7 @@ fn ai_system(
         }
     }
 
-    if settings.gizmos {
+    if let Some(ai_gizmos) = ai_gizmos.as_ref() {
         let board_pos = |pos: Vec2| {
             Vec2::new(
                 pos.x as f32 - board.width() as f32 / 2.0 + 0.5,
@@ -65,15 +69,15 @@ fn ai_system(
     }
 }
 
-trait SnakeAI {
-    fn chose_move(&self, board: &Board, gizmos: &mut AIGizmos) -> Result<Direction, ()>;
+pub trait SnakeAI {
+    fn chose_move(&self, board: &Board, gizmos: &mut Option<AIGizmos>) -> Result<Direction, ()>;
 }
 
 #[allow(dead_code)]
 struct RandomWalk;
 
 impl SnakeAI for RandomWalk {
-    fn chose_move(&self, board: &Board, _gizmos: &mut AIGizmos) -> Result<Direction, ()> {
+    fn chose_move(&self, board: &Board, _gizmos: &mut Option<AIGizmos>) -> Result<Direction, ()> {
         let snakes = board.snakes();
         let snake = snakes.get(&0).ok_or(())?;
 
@@ -91,43 +95,24 @@ impl SnakeAI for RandomWalk {
     }
 }
 
-struct TreeSearch {
-    max_depth: usize,
-    max_time: Duration,
+pub struct TreeSearch {
+    pub max_depth: usize,
+    pub max_time: Duration,
 }
 
 impl SnakeAI for TreeSearch {
-    fn chose_move(&self, board: &Board, gizmos: &mut AIGizmos) -> Result<Direction, ()> {
-        let graph = Graph::from_board(board);
-        let mut cycles = graph.cycle_basis();
+    fn chose_move(&self, board: &Board, gizmos: &mut Option<AIGizmos>) -> Result<Direction, ()> {
+        if let Some(gizmos) = gizmos.as_mut() {
+            let graph = Graph::from_board(board);
+            let best = graph.longest_cycle_evolution(500, 100, 5, &mut StdRng::from_entropy());
 
-        // combine all cycles
-        let mut combined_cycle = cycles.pop().unwrap();
-        loop {
-            let mut some_valid = false;
-            for i in 0..cycles.len() {
-                if !cycles[i].overlap(&combined_cycle) {
-                    continue;
-                }
-
-                let temp = cycles[i].xor(&combined_cycle);
-                if temp.len() > combined_cycle.len() && temp.valid() {
-                    some_valid = true;
-                    combined_cycle = temp;
-                    cycles.remove(i);
-                    break;
-                }
-            }
-            if !some_valid {
-                break;
+            for (start, end) in best.edges() {
+                gizmos
+                    .arrows
+                    .push((start.as_vec2(), end.as_vec2(), Color::srgb(1.0, 0.0, 0.0)));
             }
         }
-        // display combined cycle
-        for (start, end) in combined_cycle.edges() {
-            gizmos
-                .arrows
-                .push((start.as_vec2(), end.as_vec2(), Color::srgb(1.0, 0.0, 0.0)));
-        }
+
         // show cycles
         // for (index, cycle) in cycles.iter().enumerate() {
         //     let color = Color::srgb(
@@ -153,6 +138,22 @@ impl SnakeAI for TreeSearch {
         //     for (start, end) in points {
         //         gizmos.arrows.push((start, end, color));
         //     }
+        // }
+
+        // let mut forced_edges = EdgeMask::new(&graph);
+        // for (node, connections) in graph.connections.iter().enumerate() {
+        //     if connections.len() <= 2 {
+        //         for &neighbor in connections.iter() {
+        //             let edge = graph.edge_index(node, neighbor).unwrap();
+        //             forced_edges[edge] = true;
+        //         }
+        //     }
+        // }
+
+        // for (start, end) in forced_edges.edges() {
+        //     gizmos
+        //         .lines
+        //         .push((start, end, Color::srgba(0.0, 0.0, 0.0, 0.4)));
         // }
 
         // acutual game logic
@@ -236,7 +237,7 @@ impl SnakeAI for TreeSearch {
             }
         }
 
-        let snake = board.snakes().get(&0).ok_or(())?.clone();
+        // let snake = board.snakes().get(&0).ok_or(())?.clone();
         for board in final_boards.iter_mut() {
             board.score = self.eval_board(&board.board, board.score, gizmos)?;
 
@@ -277,7 +278,7 @@ impl TreeSearch {
         &self,
         board: &Board,
         apple_score: f32,
-        gizmos: &mut AIGizmos,
+        gizmos: &mut Option<AIGizmos>,
     ) -> Result<f32, ()> {
         let snakes = board.snakes();
         if snakes.len() == 0 {
@@ -300,9 +301,12 @@ impl TreeSearch {
                 match board.get(next_pos) {
                     Ok(Cell::Empty | Cell::Apple { .. }) => {
                         queue.push_back(next_pos);
-                        gizmos
-                            .points
-                            .push((next_pos, Color::srgba(0.0, 0.0, 0.0, 0.4)));
+
+                        if let Some(gizmos) = gizmos.as_mut() {
+                            gizmos
+                                .points
+                                .push((next_pos, Color::srgba(0.0, 0.0, 0.0, 0.4)));
+                        }
                     }
                     Ok(Cell::Snake { id: 0, part: 0 }) => {
                         found_tail = true;
@@ -345,10 +349,8 @@ impl TreeSearch {
 }
 
 #[derive(Default)]
-struct AIGizmos {
+pub struct AIGizmos {
     lines: Vec<(IVec2, IVec2, Color)>,
     arrows: Vec<(Vec2, Vec2, Color)>,
     points: Vec<(IVec2, Color)>,
 }
-
-mod cycles {}

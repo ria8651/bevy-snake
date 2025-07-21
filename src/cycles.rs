@@ -1,5 +1,6 @@
 use crate::board::{Board, Cell, Direction};
 use bevy::prelude::*;
+use rand::{seq::SliceRandom, Rng};
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
@@ -133,6 +134,49 @@ impl Graph {
                 mask
             })
             .collect()
+    }
+
+    pub fn longest_cycle_evolution(
+        &self,
+        population_size: usize,
+        generations: usize,
+        mutations: usize,
+        rng: &mut impl Rng,
+    ) -> EdgeMask {
+        let cycles = self.cycle_basis();
+        let mut population = Vec::with_capacity(population_size);
+        for i in 0..population_size {
+            population.push((i, cycles[i % cycles.len()].clone()));
+        }
+        let half = population.len() / 2;
+
+        for _gen in 0..generations {
+            for (_, cycle) in population.iter_mut() {
+                for other_cycle in cycles.choose_multiple(rng, mutations) {
+                    if cycle.overlap(other_cycle) {
+                        let temp = cycle.xor(other_cycle);
+                        if temp.valid() {
+                            *cycle = temp;
+                        }
+                    }
+                }
+            }
+
+            population.sort_by_key(|(_, cycle)| cycle.len());
+            population.reverse();
+
+            // println!("Best from gen {}: {}", _gen, population[0].len());
+            // println!("{:?}", population[0]);
+
+            for i in 0..half {
+                population[half + i] = population[i].clone();
+            }
+
+            // let diversity = population.iter().map(|(i, _)| i).collect::<HashSet<_>>();
+            // println!("Generation {}: Diversity {}", _gen, diversity.len());
+        }
+
+        population.remove(0).1
     }
 }
 
@@ -328,5 +372,54 @@ impl BitXor for EdgeMask<'_> {
             result.mask[i] ^= value;
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cycle_stability() {
+        // first run snake game with ai to get reasonable board
+        // let mut board = Board::new(BoardSettings::default());
+        // let ai = TreeSearch {
+        //     max_depth: 100,
+        //     max_time: Duration::from_millis(5),
+        // };
+        // let mut moves = 0;
+        // while let Ok(direction) = ai.chose_move(&board, &mut None) {
+        //     board.tick_board(&[Some(direction)]).unwrap();
+        //     moves += 1;
+        //     if moves > 500 {
+        //         break;
+        //     }
+        // }
+
+        // println!("Board after AI run (len {}):", board.score() + 4);
+        // println!("{:?}", board);
+
+        let board = Board::from_str(
+            r#"  3333o556
+ 23#33#5#6
+#233355566
+224#o55#0#
+2#4oo#5512
+2 4#4444#3
+2#444#1194
+2211111#85
+#21#11 o76"#,
+        )
+        .unwrap();
+
+        println!("Board after AI run (len {}):", board.score() + 4);
+        println!("{:?}", board);
+
+        let graph = Graph::from_board(&board);
+        for _ in 0..10 {
+            let cycle = graph.longest_cycle_evolution(500, 100, 5, &mut rand::thread_rng());
+            println!("Cycle found (len {}):", cycle.len());
+            println!("{:?}", cycle);
+        }
     }
 }
