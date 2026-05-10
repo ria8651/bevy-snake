@@ -93,7 +93,7 @@ pub struct InputMap {
 }
 
 pub fn create_client(mut commands: Commands) {
-    commands.spawn(ClientConnection::new("https://127.0.0.1:1234".to_string()));
+    commands.spawn(ClientConnection::new("https://bink.eu.org:1234".to_string()));
 }
 
 pub fn reset_game(
