@@ -61,14 +61,7 @@ fn start_new_wt_tasks(
     let url = connection_entity.url.clone();
     info!("Starting new wt task connecting to {}", url);
     let task = async move {
-        // read the certificate from the file
-        // let mut text = String::new();
-        // File::open("cert/localhost.hex")
-        //     .unwrap()
-        //     .read_to_string(&mut text)
-        //     .unwrap();
-        let text = "64533025c16182002c57c415035a00a365a5f62f4ab6190238354b420d27200b";
-        let hash = decode_hex(&text.split_whitespace().next().unwrap());
+        let hash = get_cert_hash();
 
         // create a new client
         let client = web_transport::ClientBuilder::new()
@@ -163,4 +156,24 @@ pub fn decode_hex(s: &str) -> Vec<u8> {
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
         .collect()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn get_cert_hash() -> Vec<u8> {
+    use wasm_bindgen::JsValue;
+    let win = web_sys::window().expect("no window");
+    let val = js_sys::Reflect::get(&win, &JsValue::from_str("WT_CERT_HASH"))
+        .expect("failed to read window.WT_CERT_HASH");
+    let hex_str = val
+        .as_string()
+        .expect("window.WT_CERT_HASH must be a hex string");
+    decode_hex(&hex_str)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn get_cert_hash() -> Vec<u8> {
+    unimplemented!(
+        "native client cert verification not wired up yet — \
+         the cert hash needs to be fetched from the server's HTTP endpoint"
+    )
 }

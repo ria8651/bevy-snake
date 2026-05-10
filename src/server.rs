@@ -2,56 +2,133 @@ use crate::{
     board::{Board, BoardEvent, BoardSettings, Direction},
     GameCommands, GameUpdates,
 };
+use axum::{response::Html, routing::get, Router};
 use futures::future::{pending, select_all};
 use log::*;
 use rand::{rngs::StdRng, SeedableRng};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use sha2::Digest;
 use std::{
     collections::HashMap,
-    fs::File,
-    io::BufReader,
-    net::{SocketAddr, ToSocketAddrs},
+    net::SocketAddr,
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     io::AsyncReadExt,
+    net::TcpListener,
     select,
     sync::mpsc::{channel, Receiver, Sender},
     time::interval,
 };
+use tower_http::services::ServeDir;
+
+pub struct ServerConfig {
+    pub wt_addr: SocketAddr,
+    pub http_addr: SocketAddr,
+    pub wt_url: String,
+    pub cert_sans: Vec<String>,
+}
 
 #[tokio::main]
-pub async fn start_server<A: ToSocketAddrs + Send + 'static>(ip: A) {
+pub async fn start_server(config: ServerConfig) {
+    let (cert_chain, key, cert_hash) = generate_ephemeral_cert(config.cert_sans.clone());
+    info!("generated ephemeral cert (sha256: {})", hex::encode(cert_hash));
+
     let (client_tx, client_rx) = channel(1);
 
     // start the game
     let game = tokio::spawn(game_loop(client_rx));
 
     // start the web transport server
-    let web_transport = tokio::spawn(web_transport(
-        ip.to_socket_addrs().unwrap().next().unwrap(),
+    let wt = tokio::spawn(web_transport(
+        config.wt_addr,
+        cert_chain,
+        key,
         client_tx,
     ));
 
-    // exit if either the web server or game loop exits
+    // start the HTTP server (static files + cert hash injection)
+    let http = tokio::spawn(http_server(
+        config.http_addr,
+        cert_hash,
+        config.wt_url,
+    ));
+
+    // exit if any task exits
     tokio::select! {
-        _ = web_transport => { error!("web transport server exited"); }
+        _ = wt => { error!("web transport server exited"); }
+        _ = http => { error!("http server exited"); }
         _ = game => { error!("game loop exited"); }
     }
 }
 
-async fn web_transport(addr: SocketAddr, client_tx: Sender<Client>) {
-    // read the PEM certificate chain
-    let chain = File::open("cert/localhost.crt").expect("failed to open cert file");
-    let chain = rustls_pemfile::certs(&mut BufReader::new(chain))
-        .collect::<Result<_, _>>()
-        .expect("no cert found");
+fn generate_ephemeral_cert(
+    sans: Vec<String>,
+) -> (Vec<CertificateDer<'static>>, PrivateKeyDer<'static>, [u8; 32]) {
+    let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)
+        .expect("failed to generate key pair");
 
-    // read the PEM private key
-    let keys = File::open("cert/localhost.key").expect("failed to open key file");
-    let key = rustls_pemfile::private_key(&mut BufReader::new(keys))
-        .expect("failed to parse key file")
-        .expect("no private key found");
+    let mut params = rcgen::CertificateParams::new(sans).expect("invalid SANs");
+    params.not_before = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
+    params.not_after = time::OffsetDateTime::now_utc() + time::Duration::hours(24);
 
+    let cert = params
+        .self_signed(&key_pair)
+        .expect("failed to self-sign cert");
+
+    let der: Vec<u8> = cert.der().to_vec();
+    let hash: [u8; 32] = sha2::Sha256::digest(&der).into();
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
+
+    (vec![CertificateDer::from(der)], key, hash)
+}
+
+async fn http_server(addr: SocketAddr, cert_hash: [u8; 32], wt_url: String) {
+    let state = Arc::new(HttpState {
+        cert_hash_hex: hex::encode(cert_hash),
+        wt_url,
+    });
+
+    let app = Router::new()
+        .route("/", get(serve_index))
+        .fallback_service(ServeDir::new("web"))
+        .with_state(state);
+
+    let listener = TcpListener::bind(addr).await.expect("bind http listener");
+    info!("http server listening on {}", addr);
+    if let Err(e) = axum::serve(listener, app).await {
+        error!("http server error: {}", e);
+    }
+}
+
+struct HttpState {
+    cert_hash_hex: String,
+    wt_url: String,
+}
+
+async fn serve_index(
+    axum::extract::State(state): axum::extract::State<Arc<HttpState>>,
+) -> Html<String> {
+    let html = match tokio::fs::read_to_string("web/index.html").await {
+        Ok(s) => s,
+        Err(e) => {
+            error!("failed to read web/index.html: {}", e);
+            return Html(format!("<h1>web/index.html not found: {}</h1>", e));
+        }
+    };
+    Html(
+        html.replace("{{CERT_HASH}}", &state.cert_hash_hex)
+            .replace("{{WT_URL}}", &state.wt_url),
+    )
+}
+
+async fn web_transport(
+    addr: SocketAddr,
+    chain: Vec<CertificateDer<'static>>,
+    key: PrivateKeyDer<'static>,
+    client_tx: Sender<Client>,
+) {
     // create the web transport server
     let mut server = web_transport_quinn::ServerBuilder::new()
         .with_addr(addr)

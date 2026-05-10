@@ -93,7 +93,21 @@ pub struct InputMap {
 }
 
 pub fn create_client(mut commands: Commands) {
-    commands.spawn(ClientConnection::new("https://bink.eu.org:1234".to_string()));
+    commands.spawn(ClientConnection::new(get_wt_url()));
+}
+
+#[cfg(target_arch = "wasm32")]
+fn get_wt_url() -> String {
+    use wasm_bindgen::JsValue;
+    let win = web_sys::window().expect("no window");
+    let val = js_sys::Reflect::get(&win, &JsValue::from_str("WT_URL"))
+        .expect("failed to read window.WT_URL");
+    val.as_string().expect("window.WT_URL must be a string")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn get_wt_url() -> String {
+    std::env::var("WT_URL").unwrap_or_else(|_| "https://localhost:1234".to_string())
 }
 
 pub fn reset_game(

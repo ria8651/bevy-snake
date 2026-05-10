@@ -20,6 +20,10 @@
             height: 100%;
         }
     </style>
+    <script>
+        window.WT_CERT_HASH = "{{CERT_HASH}}";
+        window.WT_URL = "{{WT_URL}}";
+    </script>
     <script type="module">
         import init from './bevy-snake.js'
         init().catch(error => {
