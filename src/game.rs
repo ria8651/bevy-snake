@@ -165,6 +165,7 @@ pub fn update_game(
                 info!("received {} ({}ms ping)", tick, now - timestamp);
 
                 *board = new_board;
+                *server_tick = tick;
                 for event in events {
                     match event {
                         BoardEvent::GameOver => {
@@ -180,7 +181,6 @@ pub fn update_game(
                     }
                 }
 
-                *server_tick = tick;
                 timer.reset();
 
                 for SnakeInput { input_queue, .. } in input_queues.iter_mut() {

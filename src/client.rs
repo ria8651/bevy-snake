@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy_snake::{GameCommands, GameUpdates};
+use futures::stream::{self, StreamExt};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 
 pub struct ClientPlugin;
@@ -83,16 +84,33 @@ fn start_new_wt_tasks(
         //     info!("recv: {}", String::from_utf8_lossy(&msg.unwrap()));
         // }
 
-        // send and receive messages
+        // Wrap accept_uni in a Stream so its in-flight future survives
+        // tokio::select! cancellations. Recreating session.accept_uni() each
+        // loop iteration would leak a Web Streams reader lock on wasm: the
+        // pending read prevents releaseLock from unlocking the underlying
+        // ReadableStream, which silently freezes incoming traffic. Keeping
+        // the future inside the unfold preserves it across cancellation.
+        let accept_stream = stream::unfold(session.clone(), |mut s| async move {
+            let result = s.accept_uni().await;
+            Some((result, s))
+        });
+        tokio::pin!(accept_stream);
+
         loop {
             tokio::select! {
                 cmd = command_rx.recv() => {
                     match cmd {
                         Some(cmd) => {
                             let msg = serde_json::to_vec(&cmd).unwrap();
-                            trace!("sending command: {}", String::from_utf8_lossy(&msg));
-                            let mut send = session.open_uni().await.unwrap();
-                            send.write(&msg).await.unwrap();
+                            trace!("sending command ({} bytes)", msg.len());
+                            let mut send = match session.open_uni().await {
+                                Ok(s) => s,
+                                Err(e) => { error!("client: open_uni failed: {:?}", e); break; }
+                            };
+                            if let Err(e) = send.write(&msg).await {
+                                error!("client: write failed: {:?}", e);
+                                break;
+                            }
                         }
                         None => {
                             warn!("command channel closed");
@@ -100,15 +118,35 @@ fn start_new_wt_tasks(
                         }
                     }
                 }
-                msg = session.accept_uni() => {
+                next = accept_stream.next() => {
+                    let msg = match next {
+                        Some(m) => m,
+                        None => { warn!("client: accept_stream ended"); break; }
+                    };
                     match msg {
                         Ok(mut recv) => {
                             let mut buf = Vec::new();
-                            while let Some(_) = recv.read_buf(&mut buf).await.unwrap() {
-                                // read until EOF
+                            loop {
+                                match recv.read_buf(&mut buf).await {
+                                    Ok(Some(_)) => {}
+                                    Ok(None) => break,
+                                    Err(e) => {
+                                        error!("client: read error: {:?}", e);
+                                        break;
+                                    }
+                                }
                             }
-                            let update = serde_json::from_slice::<GameUpdates>(&buf).unwrap();
-                            update_tx.send(NetworkUpdate::Update(update)).await.unwrap();
+                            match serde_json::from_slice::<GameUpdates>(&buf) {
+                                Ok(update) => {
+                                    if let Err(e) = update_tx.send(NetworkUpdate::Update(update)).await {
+                                        error!("client: update_tx send failed: {:?}", e);
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("client: json parse failed: {:?} (buf len {})", e, buf.len());
+                                }
+                            }
                         }
                         Err(e) => {
                             warn!("wt connection closed: {:?}", e);
@@ -118,6 +156,7 @@ fn start_new_wt_tasks(
                 }
             }
         }
+        warn!("client wt task exiting");
 
         // doesn't matter if the channel is already closed
         update_tx.send(NetworkUpdate::Disconnected).await.ok();
