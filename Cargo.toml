@@ -50,6 +50,8 @@ web-sys = { version = "0.3", features = ["Window"] }
 # server only dependencies, don't work on wasm
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 web-transport-quinn = "0.5"
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tokio = { version = "1.44", features = ["full"] }
 futures = "0.3"
 rcgen = "0.13"

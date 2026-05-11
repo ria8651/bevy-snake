@@ -129,11 +129,31 @@ async fn web_transport(
     key: PrivateKeyDer<'static>,
     client_tx: Sender<Client>,
 ) {
-    // create the web transport server
-    let mut server = web_transport_quinn::ServerBuilder::new()
-        .with_addr(addr)
-        .with_certificate(chain, key)
-        .unwrap();
+    // Build a quinn endpoint by hand so we can lower the QUIC idle timeout.
+    // The default is 30s, which means clients can't tell the server has died
+    // (process kill, network drop) until that timer fires — UDP has no FIN.
+    // 5s is short enough for snappy disconnect detection without thrashing.
+    let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_protocol_versions(&[&rustls::version::TLS13])
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(chain, key)
+    .unwrap();
+    tls.alpn_protocols = vec![web_transport_quinn::ALPN.to_vec()];
+
+    let quic_crypto: quinn::crypto::rustls::QuicServerConfig = tls.try_into().unwrap();
+    let mut quinn_config = quinn::ServerConfig::with_crypto(Arc::new(quic_crypto));
+
+    let mut transport = quinn::TransportConfig::default();
+    transport
+        .max_idle_timeout(Some(Duration::from_secs(5).try_into().unwrap()))
+        .keep_alive_interval(Some(Duration::from_secs(2)));
+    quinn_config.transport_config(Arc::new(transport));
+
+    let endpoint = quinn::Endpoint::server(quinn_config, addr).unwrap();
+    let mut server = web_transport_quinn::Server::new(endpoint);
 
     info!("web transport server listening on {}", addr);
 
