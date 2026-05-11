@@ -10,7 +10,7 @@ fn main() {
         .parse()
         .expect("WT_ADDR must be a valid socket address");
     let http_addr = env::var("HTTP_ADDR")
-        .unwrap_or_else(|_| "[::]:9000".to_string())
+        .unwrap_or_else(|_| "[::]:1234".to_string())
         .parse()
         .expect("HTTP_ADDR must be a valid socket address");
     let wt_url = env::var("WT_URL").unwrap_or_else(|_| "https://localhost:1234".to_string());

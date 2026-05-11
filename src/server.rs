@@ -1,5 +1,6 @@
 use crate::{
     board::{Board, BoardEvent, BoardSettings, Direction},
+    transport::{decode_payload, encode_framed, TransportError},
     GameCommands, GameUpdates,
 };
 use axum::{response::Html, routing::get, Router};
@@ -15,7 +16,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    io::AsyncReadExt,
     net::TcpListener,
     select,
     sync::mpsc::{channel, Receiver, Sender},
@@ -152,61 +152,146 @@ async fn web_transport(
         info!("started session");
 
         let client_tx = client_tx.clone();
-        tokio::spawn(async move {
-            // create a new client
-            let (client, game_commands, mut game_updates) = Client::new();
-            client_tx.send(client).await.unwrap();
+        tokio::spawn(per_session(session, client_tx));
+    }
+}
 
-            loop {
-                tokio::select! {
-                    // send game updates to the client
-                    Some(msg) = game_updates.recv() => {
-                        match session.open_uni().await {
-                            Ok(mut send) => {
-                                let msg = serde_json::to_string(&msg).unwrap();
-                                send.write_all(msg.as_bytes()).await.unwrap();
-                                trace!("sent: {}", msg);
-                            }
-                            Err(e) => {
-                                error!("failed to open uni stream: {}", e);
-                                break;
-                            }
-                        }
-                    }
-                    // receive commands from the client
-                    Ok(mut recv) = session.accept_uni() => {
-                        let mut buf = String::new();
-                        recv.read_to_string(&mut buf).await.unwrap();
-                        trace!("received: {}", buf);
-                        let command = serde_json::from_str(&buf).unwrap();
-                        game_commands.send(command).await.unwrap();
-                    }
-                    // if the session is closed, exit the loop
-                    else => {
-                        info!("session closed");
+/// One task per WebTransport session. Internally spawns two children:
+///
+/// * `send_task`: pumps `GameUpdates` from the game loop onto a single
+///   persistent uni-stream, length-prefixed.
+/// * `recv_task`: reads framed `GameCommands` from a single uni-stream the
+///   client opened, and forwards them to the game loop.
+///
+/// One persistent stream per direction is the AGENTS.md-documented fix for
+/// Firefox's WebTransport implementation, which silently stops yielding
+/// incoming uni-streams after the first two. With one long-lived stream we
+/// never trip that limit.
+async fn per_session(session: web_transport_quinn::Session, client_tx: Sender<Client>) {
+    let (client, game_commands, game_updates) = Client::new();
+    if client_tx.send(client).await.is_err() {
+        error!("game loop dropped before we could register client");
+        return;
+    }
 
-                        break;
-                    }
+    let send_session = session.clone();
+    let send_handle = tokio::spawn(send_loop(send_session, game_updates));
+
+    let recv_session = session.clone();
+    let recv_handle = tokio::spawn(recv_loop(recv_session, game_commands.clone()));
+
+    // Datagram receiver: reads unreliable input datagrams and forwards them
+    // into the same per-client commands channel as the reliable side. Loss
+    // and reorder are by design — the game loop's HashMap dedup already
+    // handles last-write-wins per tick.
+    let datagram_session = session.clone();
+    let datagram_handle = tokio::spawn(datagram_recv_loop(datagram_session, game_commands));
+
+    // Exit when any direction dies. Aborting the others ensures we drop
+    // the corresponding channel handles, which lets the game loop see the
+    // client as disconnected.
+    tokio::select! {
+        r = send_handle => match r {
+            Ok(Ok(())) => info!("send loop exited cleanly"),
+            Ok(Err(e)) => warn!("send loop exited: {}", e),
+            Err(e) => warn!("send loop panicked: {}", e),
+        },
+        r = recv_handle => match r {
+            Ok(Ok(())) => info!("recv loop exited cleanly"),
+            Ok(Err(e)) => warn!("recv loop exited: {}", e),
+            Err(e) => warn!("recv loop panicked: {}", e),
+        },
+        r = datagram_handle => match r {
+            Ok(Ok(())) => info!("datagram loop exited cleanly"),
+            Ok(Err(e)) => warn!("datagram loop exited: {}", e),
+            Err(e) => warn!("datagram loop panicked: {}", e),
+        },
+    }
+    info!("session closed");
+}
+
+async fn send_loop(
+    session: web_transport_quinn::Session,
+    mut game_updates: Receiver<GameUpdates>,
+) -> Result<(), TransportError> {
+    let mut send = session
+        .open_uni()
+        .await
+        .map_err(|e| TransportError::Io(e.to_string()))?;
+    while let Some(msg) = game_updates.recv().await {
+        let frame = encode_framed(&msg)?;
+        send.write_all(&frame)
+            .await
+            .map_err(|e| TransportError::Io(e.to_string()))?;
+        trace!("sent frame ({} bytes)", frame.len());
+    }
+    Ok(())
+}
+
+async fn recv_loop(
+    session: web_transport_quinn::Session,
+    game_commands: Sender<GameCommands>,
+) -> Result<(), TransportError> {
+    let mut recv = session
+        .accept_uni()
+        .await
+        .map_err(|e| TransportError::Io(e.to_string()))?;
+    loop {
+        let mut len_buf = [0u8; 4];
+        match recv.read_exact(&mut len_buf).await {
+            Ok(()) => {}
+            Err(e) => {
+                // Clean end of stream — peer dropped.
+                trace!("recv stream ended: {:?}", e);
+                return Ok(());
+            }
+        }
+        let len = u32::from_be_bytes(len_buf) as usize;
+        if len > 1024 * 1024 {
+            return Err(TransportError::Codec(format!(
+                "frame too large: {} bytes",
+                len
+            )));
+        }
+        let mut payload = vec![0u8; len];
+        recv.read_exact(&mut payload)
+            .await
+            .map_err(|e| TransportError::Io(e.to_string()))?;
+        let command: GameCommands = decode_payload(&payload)?;
+        trace!("received command frame ({} bytes)", len);
+        if game_commands.send(command).await.is_err() {
+            // Game loop dropped this client.
+            return Ok(());
+        }
+    }
+}
+
+/// Read unreliable datagrams from the WebTransport session and forward decoded
+/// commands to the game loop. Malformed datagrams are logged and dropped — we
+/// never close the session over a single bad packet, since datagrams are
+/// allowed to be garbage by definition. Exits when the session is closed.
+async fn datagram_recv_loop(
+    session: web_transport_quinn::Session,
+    game_commands: Sender<GameCommands>,
+) -> Result<(), TransportError> {
+    loop {
+        let bytes = match session.read_datagram().await {
+            Ok(b) => b,
+            Err(e) => {
+                trace!("datagram stream ended: {:?}", e);
+                return Ok(());
+            }
+        };
+        match decode_payload::<GameCommands>(&bytes) {
+            Ok(command) => {
+                if game_commands.send(command).await.is_err() {
+                    return Ok(());
                 }
             }
-        });
-
-        // // test sending a bidirectional stream
-        // let (mut send, mut recv) = session.accept_bi().await.unwrap();
-        // info!("accepted bidirectional stream");
-        // let buf = recv.read_to_end(1024).await.unwrap();
-        // info!("received: {}", String::from_utf8_lossy(&buf));
-        // send.write_all(b"bi hello").await.unwrap();
-        // info!("send: bi hello");
-
-        // // test receiving a bidirectional stream
-        // let (mut send, mut recv) = session.open_bi().await.unwrap();
-        // info!("opened bidirectional stream");
-        // send.write_all(b"other hello").await.unwrap();
-        // send.finish().unwrap();
-        // info!("sent: other hello");
-        // let buf = recv.read_to_end(1024).await.unwrap();
-        // info!("received: {}", String::from_utf8_lossy(&buf));
+            Err(e) => {
+                warn!("dropping malformed datagram ({} bytes): {}", bytes.len(), e);
+            }
+        }
     }
 }
 
@@ -291,6 +376,7 @@ impl GameLoop {
             .send(GameUpdates::Ticked {
                 board: self.board.clone(),
                 events: Vec::new(),
+                applied_inputs: Vec::new(),
                 tick: self.tick,
                 timestamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -344,6 +430,7 @@ impl GameLoop {
                         tick: self.tick,
                         board: self.board.clone(),
                         events: Vec::new(),
+                        applied_inputs: Vec::new(),
                         timestamp: SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .unwrap()
@@ -374,10 +461,18 @@ impl GameLoop {
 
         let exit = events.contains(&BoardEvent::GameOver);
 
+        // Trim trailing Nones so the wire form is compact and the client can
+        // see exactly which slots had server-applied inputs.
+        let mut applied_inputs: Vec<Option<Direction>> = inputs.to_vec();
+        while matches!(applied_inputs.last(), Some(None)) {
+            applied_inputs.pop();
+        }
+
         self.clients
             .broadcast(GameUpdates::Ticked {
                 board: self.board.clone(),
                 events,
+                applied_inputs,
                 tick: self.tick,
                 timestamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -617,6 +712,7 @@ mod tests {
             tick: 99,
             board: board.clone(),
             events: events.clone(),
+            applied_inputs: vec![Some(Direction::Up), None, Some(Direction::Left)],
             timestamp: 555,
         };
         let json = serde_json::to_string(&upd).unwrap();
@@ -625,11 +721,16 @@ mod tests {
             tick,
             board: parsed_board,
             events: parsed_events,
+            applied_inputs: parsed_applied,
             timestamp,
         } = parsed;
         assert_eq!(tick, 99);
         assert_eq!(timestamp, 555);
         assert_eq!(parsed_events, events);
+        assert_eq!(
+            parsed_applied,
+            vec![Some(Direction::Up), None, Some(Direction::Left)]
+        );
         assert_eq!(parsed_board.width(), board.width());
         assert_eq!(parsed_board.height(), board.height());
         for (pos, original) in board.cells() {
@@ -658,10 +759,12 @@ mod tests {
             tick,
             events,
             board,
+            applied_inputs,
             timestamp,
         } = initial;
         assert_eq!(tick, 0, "initial tick must be 0");
         assert!(events.is_empty(), "initial update has no events");
+        assert!(applied_inputs.is_empty(), "initial update has no inputs");
         assert_eq!(board.width(), 10, "default Small board width");
         assert_eq!(board.height(), 9, "default Small board height");
         assert!(timestamp > 0, "timestamp should be set");
