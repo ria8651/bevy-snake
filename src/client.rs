@@ -1,3 +1,4 @@
+use crate::ErrorKind;
 use bevy::prelude::*;
 use bevy_snake::{
     transport::{decode_payload, encode_framed},
@@ -21,6 +22,7 @@ impl Plugin for ClientPlugin {
 pub enum NetworkUpdate {
     Connected,
     Disconnected,
+    ConnectFailed(ErrorKind, String),
     Update(GameUpdates),
 }
 
@@ -66,17 +68,70 @@ fn start_new_wt_tasks(
     let url = connection_entity.url.clone();
     info!("Starting new wt task connecting to {}", url);
     let task = async move {
+        // Feature-detect WebTransport on wasm. Safari/iOS don't expose it, and
+        // construction will otherwise blow up with an opaque JsValue error.
+        #[cfg(target_arch = "wasm32")]
+        if !webtransport_supported() {
+            update_tx
+                .send(NetworkUpdate::ConnectFailed(
+                    ErrorKind::Unsupported,
+                    "window.WebTransport is undefined".to_string(),
+                ))
+                .await
+                .ok();
+            return;
+        }
+
         let hash = get_cert_hash();
 
-        // create a new client
-        let client = web_transport::ClientBuilder::new()
+        let parsed_url = match url.parse() {
+            Ok(u) => u,
+            Err(e) => {
+                error!("client: bad WT url {:?}: {:?}", url, e);
+                update_tx
+                    .send(NetworkUpdate::ConnectFailed(
+                        ErrorKind::BadUrl,
+                        format!("{}: {:?}", url, e),
+                    ))
+                    .await
+                    .ok();
+                return;
+            }
+        };
+
+        let client = match web_transport::ClientBuilder::new()
             .with_server_certificate_hashes(vec![hash])
-            .unwrap();
+        {
+            Ok(c) => c,
+            Err(e) => {
+                error!("client: ClientBuilder failed: {:?}", e);
+                update_tx
+                    .send(NetworkUpdate::ConnectFailed(
+                        ErrorKind::Network,
+                        format!("{:?}", e),
+                    ))
+                    .await
+                    .ok();
+                return;
+            }
+        };
 
-        // connect to the given URL
-        let mut session = client.connect(&url.parse().unwrap()).await.unwrap();
+        let mut session = match client.connect(&parsed_url).await {
+            Ok(s) => s,
+            Err(e) => {
+                error!("client: connect failed: {:?}", e);
+                update_tx
+                    .send(NetworkUpdate::ConnectFailed(
+                        ErrorKind::Network,
+                        format!("{:?}", e),
+                    ))
+                    .await
+                    .ok();
+                return;
+            }
+        };
 
-        update_tx.send(NetworkUpdate::Connected).await.unwrap();
+        update_tx.send(NetworkUpdate::Connected).await.ok();
 
         // One persistent uni-stream per direction. This is the
         // AGENTS.md-documented fix for Firefox's WebTransport (it silently
@@ -370,6 +425,15 @@ fn get_cert_hash() -> Vec<u8> {
         .as_string()
         .expect("window.WT_CERT_HASH must be a hex string");
     decode_hex(&hex_str)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn webtransport_supported() -> bool {
+    use wasm_bindgen::JsValue;
+    let Some(win) = web_sys::window() else {
+        return false;
+    };
+    js_sys::Reflect::has(&win, &JsValue::from_str("WebTransport")).unwrap_or(false)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

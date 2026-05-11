@@ -1,4 +1,9 @@
-use crate::{game::Points, GizmoSetting, Settings};
+use crate::{
+    client::ClientConnection,
+    game::get_wt_url,
+    game::Points,
+    ClientState, ConnectionError, GizmoSetting, Settings,
+};
 use bevy::prelude::*;
 use bevy_inspector_egui::{
     bevy_egui::{EguiContexts, EguiPlugin},
@@ -12,7 +17,7 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(EguiPlugin)
             .register_type::<Settings>()
-            .add_systems(Update, ui_system);
+            .add_systems(Update, (ui_system, connecting_system, error_system));
     }
 }
 
@@ -22,7 +27,11 @@ fn ui_system(
     mut last_score: Local<usize>,
     points: Res<Points>,
     board: Res<Board>,
+    state: Res<State<ClientState>>,
 ) {
+    if *state.get() != ClientState::Connected {
+        return;
+    }
     egui::Window::new("Settings").show(contexts.ctx_mut(), |ui| {
         // scores
         ui.horizontal(|ui| {
@@ -107,4 +116,56 @@ fn ui_system(
         ui.label("Snake 4: YGHJ to move, B to shoot");
         ui.label("Space to restart");
     });
+}
+
+fn connecting_system(mut contexts: EguiContexts, state: Res<State<ClientState>>) {
+    if *state.get() != ClientState::Connecting {
+        return;
+    }
+    egui::Window::new("Connecting")
+        .title_bar(false)
+        .resizable(false)
+        .collapsible(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(contexts.ctx_mut(), |ui| {
+            ui.label("Connecting to server…");
+        });
+}
+
+fn error_system(
+    mut contexts: EguiContexts,
+    state: Res<State<ClientState>>,
+    error: Res<ConnectionError>,
+    mut next_state: ResMut<NextState<ClientState>>,
+    mut commands: Commands,
+    connections: Query<Entity, With<ClientConnection>>,
+) {
+    if *state.get() != ClientState::Error {
+        return;
+    }
+    egui::Window::new("Connection error")
+        .resizable(false)
+        .collapsible(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(contexts.ctx_mut(), |ui| {
+            ui.heading(error.headline());
+            if let Some(hint) = error.hint() {
+                ui.add_space(4.0);
+                ui.label(hint);
+            }
+            if !error.detail.is_empty() {
+                ui.add_space(4.0);
+                ui.collapsing("Details", |ui| {
+                    ui.monospace(&error.detail);
+                });
+            }
+            ui.add_space(8.0);
+            if ui.button("Retry").clicked() {
+                for entity in &connections {
+                    commands.entity(entity).despawn();
+                }
+                commands.spawn(ClientConnection::new(get_wt_url()));
+                next_state.set(ClientState::Connecting);
+            }
+        });
 }

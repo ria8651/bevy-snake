@@ -6,12 +6,57 @@ mod game;
 mod render;
 mod ui;
 
-// #[derive(States, Default, Debug, Hash, PartialEq, Eq, Clone)]
-// pub enum GameState {
-//     #[default]
-//     InGame,
-//     GameOver,
-// }
+#[derive(States, Default, Debug, Hash, PartialEq, Eq, Clone)]
+pub enum ClientState {
+    #[default]
+    Connecting,
+    Connected,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ErrorKind {
+    #[default]
+    Unknown,
+    Unsupported,
+    Network,
+    Disconnected,
+    BadUrl,
+}
+
+#[derive(Resource, Default)]
+pub struct ConnectionError {
+    pub kind: ErrorKind,
+    pub detail: String,
+}
+
+impl ConnectionError {
+    pub fn headline(&self) -> &'static str {
+        match self.kind {
+            ErrorKind::Unsupported => "WebTransport is not supported in this browser",
+            ErrorKind::Network => "Could not reach the game server",
+            ErrorKind::Disconnected => "Lost connection to the game server",
+            ErrorKind::BadUrl => "The server URL is invalid",
+            ErrorKind::Unknown => "Connection error",
+        }
+    }
+
+    pub fn hint(&self) -> Option<&'static str> {
+        match self.kind {
+            ErrorKind::Unsupported => Some(
+                "Try Chrome or Edge on desktop, or Chrome on Android. \
+                 Safari and iOS do not currently support WebTransport.",
+            ),
+            ErrorKind::Network => Some(
+                "Check your internet connection, then press Retry. \
+                 The server may also be down or unreachable.",
+            ),
+            ErrorKind::Disconnected => Some("Press Retry to reconnect."),
+            ErrorKind::BadUrl => None,
+            ErrorKind::Unknown => None,
+        }
+    }
+}
 
 #[derive(PartialEq, Eq)]
 pub enum Speed {
@@ -61,6 +106,8 @@ fn main() {
             render::BoardRenderPlugin,
             ui::UiPlugin,
         ))
+        .init_state::<ClientState>()
+        .init_resource::<ConnectionError>()
         .insert_resource(ClearColor(Color::srgb(0.1, 0.1, 0.1)))
         .insert_resource(Settings {
             interpolation: true,

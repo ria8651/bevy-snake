@@ -1,6 +1,6 @@
 use crate::{
     client::{ClientConnection, NetworkUpdate},
-    GizmoSetting, Settings,
+    ClientState, ConnectionError, ErrorKind, GizmoSetting, Settings,
 };
 use bevy::{prelude::*, utils::HashMap};
 use bevy_snake::{
@@ -135,7 +135,7 @@ pub fn create_client(mut commands: Commands) {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn get_wt_url() -> String {
+pub fn get_wt_url() -> String {
     use wasm_bindgen::JsValue;
     let win = web_sys::window().expect("no window");
     let val = js_sys::Reflect::get(&win, &JsValue::from_str("WT_URL"))
@@ -144,7 +144,7 @@ fn get_wt_url() -> String {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn get_wt_url() -> String {
+pub fn get_wt_url() -> String {
     std::env::var("WT_URL").unwrap_or_else(|_| "https://localhost:1234".to_string())
 }
 
@@ -199,6 +199,8 @@ pub fn update_game(
     mut client_connections: Query<&mut ClientConnection>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
+    mut next_state: ResMut<NextState<ClientState>>,
+    mut connection_error: ResMut<ConnectionError>,
 ) {
     timer.tick(time.delta());
     let now = SystemTime::now()
@@ -206,7 +208,11 @@ pub fn update_game(
         .unwrap()
         .as_millis() as u64;
 
-    let mut client_connection = client_connections.single_mut();
+    // No connection entity right now (e.g. between Retry click and respawn).
+    // Skip the network section entirely — predicted board still ticks below.
+    let Ok(mut client_connection) = client_connections.get_single_mut() else {
+        return;
+    };
 
     // 1. Consume server snapshots: trust authoritative state, drop ack'd
     //    inputs from the log, and re-predict forward from the new baseline.
@@ -286,9 +292,20 @@ pub fn update_game(
             }
             NetworkUpdate::Connected => {
                 info!("connected");
+                next_state.set(ClientState::Connected);
             }
             NetworkUpdate::Disconnected => {
                 info!("disconnected");
+                *connection_error = ConnectionError {
+                    kind: ErrorKind::Disconnected,
+                    detail: String::new(),
+                };
+                next_state.set(ClientState::Error);
+            }
+            NetworkUpdate::ConnectFailed(kind, detail) => {
+                info!("connect failed: {:?} {}", kind, detail);
+                *connection_error = ConnectionError { kind, detail };
+                next_state.set(ClientState::Error);
             }
         }
     }
