@@ -13,6 +13,7 @@
 //!   via a deterministic seed derived from the sorted peer ids.
 
 use crate::ClientState;
+use crate::lobby::{CurrentLobby, Role};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy_ggrs::{
@@ -169,36 +170,47 @@ impl Plugin for NetPlugin {
     }
 }
 
-fn room_url(settings: &GameSettings) -> String {
-    let base = option_env!("MATCHBOX_ROOM_URL").unwrap_or("ws://localhost:3536/snake");
-    let n = settings.board.players as usize;
-    format!("{}?next={}", base, n)
+/// Build the full matchbox URL for a specific room name. Each lobby has
+/// its own room, so the `?next={N}` bucketing that the old global "snake"
+/// room used is gone — the lobby Start broadcast is the readiness signal
+/// instead.
+fn room_url(room_name: &str) -> String {
+    let base = option_env!("MATCHBOX_ROOM_URL").unwrap_or("ws://localhost:3536");
+    let base = base.trim_end_matches('/');
+    let base = base.trim_end_matches("/snake");
+    format!("{}/{}", base, room_name)
 }
 
-/// Entered when the user clicks Play. For 1-player, builds a GGRS synctest
-/// session synchronously and inserts it (drive_state will then advance to
-/// Playing next Update). For 2+ players, opens the matchbox socket — peer
-/// discovery and session build then happens in [`wait_for_players`].
+/// Entered when the user clicks Play / Host / Join, **after**
+/// `CurrentLobby` has been populated by the lobby plugin or the UI's "Solo
+/// Play" handler.
 ///
-/// Also resets the rolled-back state (Board / MovementFrame / InputQueues) so
-/// the chosen settings take effect from frame 0.
+/// - `Role::Solo` → synctest 1-player session, no networking.
+/// - `Role::Host` / `Role::Joiner` → open matchbox to the lobby's room name
+///   and idle in [`wait_for_players`] until the Start roster arrives.
+///
+/// Also resets the rolled-back state (Board / MovementFrame / InputQueues)
+/// so the chosen settings take effect from frame 0. Player count is set
+/// here from the lobby roster size (or 1 for solo); the lobby UI doesn't
+/// expose it.
 fn start_session(
     mut commands: Commands,
-    settings: Res<GameSettings>,
+    mut settings: ResMut<GameSettings>,
     mut board: ResMut<Board>,
     mut frame: ResMut<MovementFrame>,
     mut queues: ResMut<InputQueues>,
+    current: Res<CurrentLobby>,
 ) {
-    let n = settings.board.players as usize;
-    *board = Board::new(settings.board);
-    *frame = MovementFrame {
-        frame: 0,
-        generation: 0,
-        frames_per_movement: settings.speed.frames_per_movement(),
-    };
-    *queues = InputQueues(vec![Vec::new(); n]);
+    if current.role == Role::Solo {
+        settings.board.players = PlayerCount::One;
+        *board = Board::new(settings.board);
+        *frame = MovementFrame {
+            frame: 0,
+            generation: 0,
+            frames_per_movement: settings.speed.frames_per_movement(),
+        };
+        *queues = InputQueues(vec![Vec::new(); 1]);
 
-    if matches!(settings.board.players, PlayerCount::One) {
         let session = ggrs::SessionBuilder::<GameConfig>::new()
             .with_num_players(1)
             .with_input_delay(INPUT_DELAY)
@@ -208,11 +220,28 @@ fn start_session(
         info!("solo session, seed: {:x}", seed);
         commands.insert_resource(RngState { seed });
         commands.insert_resource(Session::SyncTest(session));
-    } else {
-        let url = room_url(&settings);
-        info!("opening matchbox socket: {}", url);
-        commands.insert_resource(MatchboxSocket::new_unreliable(url));
+        return;
     }
+
+    let Some(room_name) = current.room_name.as_deref() else {
+        warn!("start_session entered without a lobby room name");
+        return;
+    };
+    // Player count is unknown until the Start roster arrives; reset board
+    // to a single-player placeholder for now. `wait_for_players` rebuilds
+    // it with the real count once the roster comes in.
+    settings.board.players = PlayerCount::One;
+    *board = Board::new(settings.board);
+    *frame = MovementFrame {
+        frame: 0,
+        generation: 0,
+        frames_per_movement: settings.speed.frames_per_movement(),
+    };
+    *queues = InputQueues(vec![Vec::new(); 1]);
+
+    let url = room_url(room_name);
+    info!("opening matchbox socket: {}", url);
+    commands.insert_resource(MatchboxSocket::new_unreliable(url));
 }
 
 fn solo_seed() -> u64 {
@@ -231,7 +260,10 @@ fn wait_for_players(
     mut commands: Commands,
     socket: Option<ResMut<MatchboxSocket>>,
     session: Option<Res<Session<GameConfig>>>,
-    settings: Res<GameSettings>,
+    mut settings: ResMut<GameSettings>,
+    mut board: ResMut<Board>,
+    mut queues: ResMut<InputQueues>,
+    current: Res<CurrentLobby>,
 ) {
     if session.is_some() {
         return;
@@ -242,23 +274,50 @@ fn wait_for_players(
     if socket.get_channel(0).is_err() {
         return;
     }
-
-    let expected = settings.board.players as usize;
-    let _ = socket.try_update_peers();
-    let players = socket.players();
-    if players.len() < expected {
+    // Server-broadcast roster gates session build. Until it arrives, we
+    // sit on the matchbox connection and let the user wait.
+    let Some(roster) = current.start_roster.as_ref() else {
         return;
-    }
-    info!("got {} players, building GGRS session", players.len());
+    };
 
-    let seed = derive_session_seed(&mut socket);
+    let _ = socket.try_update_peers();
+    let my_id = socket.id();
+    let connected: std::collections::HashSet<PeerId> = socket.connected_peers().collect();
+    // Every roster member must either be us or a peer we've finished the
+    // WebRTC dance with. Otherwise wait.
+    for p in roster {
+        if Some(*p) == my_id {
+            continue;
+        }
+        if !connected.contains(p) {
+            return;
+        }
+    }
+
+    let n = roster.len();
+    info!("building GGRS session with {} players", n);
+
+    // The board was constructed with PlayerCount::One in start_session;
+    // rebuild it now that we know the real count from the roster.
+    settings.board.players = PlayerCount::from_count(n);
+    *board = Board::new(settings.board);
+    *queues = InputQueues(vec![Vec::new(); n]);
+
+    let seed = derive_session_seed(roster);
     info!("session seed: {:x}", seed);
 
     let mut builder = ggrs::SessionBuilder::<GameConfig>::new()
-        .with_num_players(expected)
+        .with_num_players(n)
         .with_input_delay(INPUT_DELAY)
         .with_desync_detection_mode(ggrs::DesyncDetection::On { interval: 10 });
-    for (i, player) in players.into_iter().enumerate() {
+    // Roster order is the canonical player-handle assignment. Each peer
+    // walks the same list, so handle 0 is the same person everywhere.
+    for (i, peer) in roster.iter().enumerate() {
+        let player = if Some(*peer) == my_id {
+            ggrs::PlayerType::Local
+        } else {
+            ggrs::PlayerType::Remote(*peer)
+        };
         builder = builder.add_player(player, i).expect("add_player");
     }
     let channel = socket.take_channel(0).unwrap();
@@ -268,20 +327,15 @@ fn wait_for_players(
     commands.insert_resource(Session::P2P(session));
 }
 
-fn derive_session_seed(socket: &mut MatchboxSocket) -> u64 {
+/// Hash the (already-deterministic-order) roster into a u64. Every peer
+/// receives the same roster from the lobby server, so every peer arrives at
+/// the same seed without further coordination.
+fn derive_session_seed(roster: &[PeerId]) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-    let mut ids: Vec<String> = socket
-        .connected_peers()
-        .map(|id| id.to_string())
-        .collect();
-    if let Some(self_id) = socket.id() {
-        ids.push(self_id.to_string());
-    }
-    ids.sort();
     let mut h = DefaultHasher::new();
-    for id in ids {
-        id.hash(&mut h);
+    for id in roster {
+        id.0.to_string().hash(&mut h);
     }
     h.finish()
 }

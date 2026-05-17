@@ -555,6 +555,20 @@ pub enum PlayerCount {
     Four = 4,
 }
 
+impl PlayerCount {
+    /// Maps a runtime roster size (1..=4) to the corresponding variant. The
+    /// session builder uses this to convert "how many peers did the lobby
+    /// Start broadcast list" into the value the board needs at construction.
+    pub fn from_count(n: usize) -> Self {
+        match n {
+            0 | 1 => PlayerCount::One,
+            2 => PlayerCount::Two,
+            3 => PlayerCount::Three,
+            _ => PlayerCount::Four,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct BoardSettings {
     pub board_size: BoardSize,

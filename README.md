@@ -32,36 +32,54 @@ wasm-bindgen --no-typescript --out-name bevy-snake \
   target/wasm32-unknown-unknown/release/bevy-snake.wasm
 ```
 
-Run the server, which serves `web/` over HTTP **and** runs the matchbox
-signaling server on a separate port:
+Run the server, which serves `web/` over HTTP, runs the matchbox signaling
+server on a separate port, **and** hosts the lobby directory at
+`/lobbies`:
 
 ```bash
 cargo run --bin server --release
 # open http://localhost:1234
 ```
 
-Solo (1-player) play skips matchbox entirely. For 2+ player matches all
-clients must reach the matchbox URL compiled into the wasm — by default
-`ws://localhost:3536/snake`. Override at build time via `MATCHBOX_ROOM_URL`
-(the `?next={N}` query string is appended automatically based on the lobby
-player count).
+## Lobbies
 
-Environment overrides for the server:
+The main menu is a live lobby browser. To play multiplayer:
+
+1. One player clicks **Create lobby**, picks board/apples/speed, and clicks
+   **Host**. They land on a waiting screen.
+2. Other players see the lobby in their browser and click it to join. They
+   inherit the host's settings.
+3. When the host is ready (anywhere from 2 to 4 players), they click
+   **Start**. Everyone in the lobby at that moment is locked in.
+4. Player count is dynamic — it's whoever happens to be in the lobby when
+   Start is pressed.
+
+**Solo Play** on the main menu skips lobbies and matchbox entirely.
+
+## Server config
 
 | Var | Default | Notes |
 |---|---|---|
-| `HTTP_ADDR` | `0.0.0.0:1234` | TCP bind for the static-file server (`web/`) |
+| `HTTP_ADDR` | `0.0.0.0:1234` | TCP bind for the static-file server + lobby WS |
 | `MATCHBOX_ADDR` | `0.0.0.0:3536` | WebSocket bind for matchbox signaling |
 
-For a deploy behind a public hostname, override `MATCHBOX_ROOM_URL` at the
-client's compile step, e.g.
+## Client compile-time URLs
+
+For a deploy behind a public hostname, override the URLs at the client's
+compile step:
 
 ```bash
-MATCHBOX_ROOM_URL=wss://bink.eu.org/snake \
+MATCHBOX_ROOM_URL=wss://bink.eu.org \
+LOBBY_WS_URL=wss://bink.eu.org/lobbies \
   cargo build --release --target wasm32-unknown-unknown
 ```
 
-Use `wss://` so the WebSocket works from an HTTPS page.
+| Var | Default | Notes |
+|---|---|---|
+| `MATCHBOX_ROOM_URL` | `ws://localhost:3536` | Base of the matchbox signaling server. Each lobby appends its own room name (`/lobby-{id}`). |
+| `LOBBY_WS_URL` | `ws://localhost:1234/lobbies` | Lobby directory WebSocket endpoint. |
+
+Use `wss://` so the WebSockets work from an HTTPS page.
 
 ## License
 

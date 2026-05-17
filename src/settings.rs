@@ -1,7 +1,8 @@
 use crate::board::BoardSettings;
 use bevy::prelude::Resource;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Speed {
     Slow,
     Normal,
@@ -18,7 +19,7 @@ impl Speed {
     }
 }
 
-#[derive(Resource, Clone, Copy, Debug)]
+#[derive(Resource, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct GameSettings {
     pub board: BoardSettings,
     pub speed: Speed,

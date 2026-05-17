@@ -21,35 +21,50 @@ cargo run --bin server --release    # http://localhost:1234
 cargo test --lib                    # board logic tests only
 ```
 
-`[src/bin/server.rs](src/bin/server.rs)` runs the matchbox signaling endpoint
-**and** serves `web/`. It does not host gameplay — all sim runs in clients.
+`[src/bin/server.rs](src/bin/server.rs)` runs the matchbox signaling
+endpoint, hosts the lobby directory at `/lobbies`, **and** serves `web/`.
+It does not host gameplay — all sim runs in clients.
 
 ## Architecture
 
-Peer-to-peer rollback netcode. Every client runs the same deterministic
-simulation; GGRS handles input delivery, rollback, and desync detection.
+Peer-to-peer rollback netcode with a thin lobby-discovery layer on top.
+Every client runs the same deterministic simulation; GGRS handles input
+delivery, rollback, and desync detection.
 
 - `[src/main.rs](src/main.rs)` — `App` setup. `ClientState` state machine:
-  `Lobby → WaitingForOpponent → Playing`. `drive_state` flips
-  `WaitingForOpponent ↔ Playing` based on `Session<GameConfig>` presence.
+  `Browsing → Creating → WaitingForOpponent → Playing → Finished`.
+  `drive_state` flips `WaitingForOpponent ↔ Playing` based on
+  `Session<GameConfig>` presence, and routes `Playing → Finished/Browsing`
+  on session loss / all-snakes-dead.
 - `[src/board.rs](src/board.rs)` — pure game logic. `Board::tick`, `Snake`,
   `BoardSettings`, `Direction`, `BoardEvent`. No I/O, no RNG side effects —
   takes `&mut StdRng` so the caller controls determinism.
 - `[src/settings.rs](src/settings.rs)` — `GameSettings { board, speed }`
-  resource, edited from the lobby UI, read by the net + UI plugins.
+  resource. Edited from the Creating UI, serialized to/from the host's
+  lobby record so joiners inherit it.
+- `[src/lobby_proto.rs](src/lobby_proto.rs)` — wire types shared between
+  client and server (`Lobby`, `LobbyState`, `ClientMsg`, `ServerMsg`).
+- `[src/lobby.rs](src/lobby.rs)` — `LobbyPlugin`. Owns one WebSocket to
+  the lobby service via `ewebsock`. Resources: `LobbyClient` (NonSend —
+  ws handles are `!Send` on wasm), `LobbyList`, `CurrentLobby`. Maintains
+  the lobby list + drives `ClientState` transitions on `LobbyCreated` /
+  `LobbyStarting` / `Kicked`.
 - `[src/net.rs](src/net.rs)` — `NetPlugin`. Owns GGRS plugin registration,
-  rollback resources (`Board`, `MovementFrame`, `RngState`, `InputQueues`),
-  matchbox socket lifecycle, input buffering. `start_session` runs
-  `OnEnter(WaitingForOpponent)` — 1-player goes through `Session::SyncTest`,
-  2+ opens a `MatchboxSocket` and `wait_for_players` builds the P2P session
-  once peers connect.
+  rollback resources, matchbox socket lifecycle, input buffering.
+  `start_session` runs `OnEnter(WaitingForOpponent)` and either takes the
+  solo synctest path or opens a `MatchboxSocket` to the lobby's room.
+  `wait_for_players` gates session build on the Start roster broadcast
+  from the lobby server (not on a peer count).
 - `[src/render.rs](src/render.rs)` — sprite-based board rendering with
   interpolated snake positions (`MovementFrame::movement_progress`).
 - `[src/ui.rs](src/ui.rs)` — Bevy Feathers widgets. Per-state UI:
-  `OnEnter(Lobby)` spawns the settings panel, `OnEnter(WaitingForOpponent)`
-  spawns the dim overlay, `OnEnter(Playing)` spawns the score HUD.
+  `OnEnter(Browsing)` spawns the lobby list, `OnEnter(Creating)` the
+  settings panel + Host button, `OnEnter(WaitingForOpponent)` the dim
+  overlay with the Start button (host only), `OnEnter(Playing)` the score
+  HUD, `OnEnter(Finished)` the game-over screen.
 - `[src/bin/server.rs](src/bin/server.rs)` — axum static files + matchbox
-  signaling. Native-only (`#[cfg(not(target_arch = "wasm32"))]`).
+  signaling + lobby `/lobbies` WS service. In-memory lobby registry,
+  heartbeat GC, no persistence. Native-only.
 
 ## Determinism rules (rollback)
 
@@ -62,8 +77,13 @@ new resource needs rollback, register it with
   `GgrsSchedule`. Solo-mode seeding in `start_session` uses
   `rand::random::<u64>()` only because that happens **outside** the
   rollback schedule.
-- `option_env!("MATCHBOX_ROOM_URL")` is compile-time; `?next={N}` is
-  appended at runtime from `GameSettings.board.players`.
+- `option_env!("MATCHBOX_ROOM_URL")` and `option_env!("LOBBY_WS_URL")` are
+  compile-time. The matchbox base is composed with the lobby's room name
+  at runtime (`{base}/lobby-{id}`); player count is no longer in the URL.
+- The Start roster broadcast from the lobby server is the readiness
+  signal — every peer arrives at the same `Vec<PeerId>` independently and
+  builds GGRS players in that order, which deterministically assigns
+  handles 0..n across the network.
 - Adding a non-deterministic call (system time, OS RNG, file I/O) inside
   `GgrsSchedule` will desync peers. Desync detection is on
   (`DesyncDetection::On { interval: 10 }`), so it'll be loud in logs.
@@ -78,9 +98,18 @@ new resource needs rollback, register it with
   before deploying.
 - **Settings lock at session start**: `start_session` clones
   `GameSettings` into the rollback resources. Changing settings during
-  `Playing` does nothing; the player has to leave back to `Lobby` first.
-- **1-player skips matchbox entirely** — no socket, no session URL. If
-  you're testing networking, pick 2+ in the lobby.
+  `Playing` does nothing; the player has to leave back to `Browsing` first.
+- **Player count is set at Start, not in settings**: `GameSettings.board.players`
+  is overwritten by `start_session` / `wait_for_players` from the Start
+  roster size. Don't put it in the lobby UI; the host decides by waiting
+  for players to arrive and then clicking Start.
+- **Solo skips matchbox + lobby entirely** — clicking Solo Play goes
+  straight to `WaitingForOpponent` with `CurrentLobby.role == Role::Solo`,
+  no WS, no socket. If you're testing networking, use Create/Join.
+- **`LobbyClient` is NonSend**: `ewebsock`'s wasm backend stores
+  `Rc<WebSocket>`, which is `!Send`. The plugin uses `NonSendMut` so the
+  same code works on native and wasm. Observers touching `LobbyClient`
+  must take `NonSendMut`, not `ResMut`.
 
 ## Style
 
