@@ -1,17 +1,13 @@
-use crate::{
-    game::{SnakeInputs, TickClock},
-    Settings,
-};
+use crate::net::{InputQueues, MovementFrame};
 use bevy::{prelude::*, render::camera::ScalingMode, utils::HashMap};
 use bevy_snake::board::{Board, Cell};
-use web_time::Instant;
 
 pub struct BoardRenderPlugin;
 
 impl Plugin for BoardRenderPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, setup)
-            .add_systems(Update, draw_board.after(crate::game_state));
+            .add_systems(Update, draw_board);
     }
 }
 
@@ -36,7 +32,6 @@ fn setup(
 
     commands.insert_resource(RenderResources {
         apple_texture: asset_server.load("images/apple.png"),
-        // capsule_mesh: meshes.add(Capsule2d::new(0.35, 1.0)),
         circle_mesh: meshes.add(Circle::new(0.35)),
         square_mesh: meshes.add(Rectangle::from_size(Vec2::new(0.7, 1.0))),
         snake_materials: vec![
@@ -55,9 +50,6 @@ struct BoardTile;
 struct SnakePart;
 
 #[derive(Component)]
-struct DebugTile;
-
-#[derive(Component)]
 struct Apple;
 
 fn draw_board(
@@ -68,14 +60,12 @@ fn draw_board(
     mut apples: Local<HashMap<IVec2, Entity>>,
     mut walls: Local<HashMap<IVec2, Entity>>,
     board: Res<Board>,
-    input_queues: Res<SnakeInputs>,
+    movement_frame: Res<MovementFrame>,
+    queues: Res<InputQueues>,
     board_tiles: Query<Entity, With<BoardTile>>,
     snake_parts: Query<Entity, With<SnakePart>>,
-    debug_tiles: Query<Entity, With<DebugTile>>,
     render_resources: Res<RenderResources>,
-    tick_clock: Res<TickClock>,
     time: Res<Time>,
-    settings: Res<Settings>,
 ) {
     let board_pos = |pos: Vec2, depth: f32| -> Transform {
         Transform::from_xyz(
@@ -85,7 +75,7 @@ fn draw_board(
         )
     };
 
-    // background
+    // background — rebuild iff the board dimensions changed
     if (board.width(), board.height()) != *board_size {
         for tile in board_tiles.iter() {
             commands.entity(tile).despawn();
@@ -195,29 +185,48 @@ fn draw_board(
         commands.entity(entity).despawn();
     }
 
-    let mut interpolation = tick_clock.interpolation(Instant::now());
-    interpolation *= settings.interpolation as u32 as f32;
+    let interpolation = movement_frame.movement_progress();
 
     for (snake_id, snake) in board.snakes().into_iter() {
         let mut parts: Vec<Vec2> = snake.parts.iter().map(|pos| pos.as_vec2()).collect();
 
-        let next_input = input_queues
-            .get(snake_id as usize)
-            .and_then(|q| q.input_queue.get(0))
-            .filter(|_| interpolation > 0.5)
-            .unwrap_or(&snake.dir)
-            .as_vec2()
-            .as_vec2();
+        // Head animation runs in two phases split at LEAN_START:
+        //
+        // - Phase 1 (interp 0→LEAN_START): head was rendered half a cell
+        //   behind its current grid position right after the movement frame,
+        //   sliding forward in `snake.dir` to catch up by interp=LEAN_START.
+        //   This is the visual "the snake just stepped into this cell."
+        // - Phase 2 (interp LEAN_START→1): head extends forward into the
+        //   queued direction (or keeps going straight if no queued turn)
+        //   by up to half a cell.
+        //
+        // LEAN_START sits well before the midpoint so a queued direction is
+        // visible quickly after the press. The offset is rescaled per-phase
+        // so the start/end positions still match -0.5/+0.5 cells regardless
+        // of where the crossover sits.
+        const LEAN_START: f32 = 0.3;
+
+        let next_dir = queues
+            .front(snake_id as usize)
+            .filter(|_| interpolation > LEAN_START)
+            .filter(|d| *d != snake.dir.opposite())
+            .unwrap_or(snake.dir);
+        let next_input = next_dir.as_vec2().as_vec2();
 
         let h = parts.len() - 1; // head
-        if interpolation > 0.5 {
+        if interpolation > LEAN_START {
             parts.insert(h, parts[h]);
         }
 
         let h = parts.len() - 1;
         parts[0] = parts[0] + (parts[1] - parts[0]) * interpolation;
-        parts[h] = parts[h] + next_input * (interpolation - 0.5);
-        // parts[h] = parts[n] + (parts[h] - parts[n]) * interpolation;
+        let denom = if interpolation < LEAN_START {
+            LEAN_START
+        } else {
+            1.0 - LEAN_START
+        };
+        let offset = (interpolation - LEAN_START) * 0.5 / denom;
+        parts[h] = parts[h] + next_input * offset;
 
         for i in 0..parts.len() {
             commands.spawn((
@@ -245,23 +254,6 @@ fn draw_board(
                     )
                     .with_scale(Vec3::new(1.0, scale, 1.0)),
                 SnakePart,
-            ));
-        }
-    }
-
-    // debug
-    for entity in debug_tiles.iter() {
-        commands.entity(entity).despawn();
-    }
-    if settings.walls_debug {
-        for pos in board.get_spawnable() {
-            commands.spawn((
-                Sprite {
-                    color: Color::srgba(1.0, 0.0, 0.0, 0.15),
-                    ..default()
-                },
-                board_pos(pos.as_vec2(), 0.0),
-                DebugTile,
             ));
         }
     }

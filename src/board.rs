@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::ops::{Index, IndexMut};
 use thiserror::Error;
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Cell {
     Empty,
     Wall,
@@ -17,7 +17,7 @@ pub enum Cell {
     Apple { natural: bool }, // natural apples respawn
 }
 
-#[derive(Resource, Component, Clone, Serialize, Deserialize)]
+#[derive(Resource, Component, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Board {
     cells: Vec<Cell>,
     width: usize,
@@ -254,19 +254,15 @@ impl Board {
         Ok(())
     }
 
-    /// Deterministic half of the per-tick simulation: snake movement,
-    /// collisions, growth, damage, game-over detection. Does NOT spawn new
-    /// apples or walls (which require RNG). Returns `(events, apples_to_spawn)`
-    /// so the server can apply spawning afterward with its own RNG, while
-    /// clients can replay this half without holding RNG state.
-    ///
-    /// Clients running prediction must call this — never `tick_board`. The
-    /// next authoritative snapshot will overwrite any spawn-position guesses
-    /// anyway, but we save the divergence by simply not predicting them.
-    pub fn tick_board_no_spawn(
+    /// Run one tick of the deterministic simulation: snake movement,
+    /// collisions, growth, damage, game-over detection, and apple/wall
+    /// spawning. Every peer runs this with an identical RNG so the result is
+    /// identical across peers — that's the GGRS rollback contract.
+    pub fn tick(
         &mut self,
         inputs: &[Option<Direction>],
-    ) -> Result<(Vec<BoardEvent>, usize), BoardError> {
+        rng: &mut impl Rng,
+    ) -> Result<Vec<BoardEvent>, BoardError> {
         let mut board_events = Vec::new();
         let mut heads = HashMap::new();
         let mut grow = HashSet::new();
@@ -373,19 +369,7 @@ impl Board {
             board_events.push(BoardEvent::GameOver);
         }
 
-        Ok((board_events, spawn_apples))
-    }
-
-    /// Authoritative server tick: run the deterministic half, then spawn the
-    /// apples/walls that natural-apple eats triggered. Clients call
-    /// `tick_board_no_spawn` directly to predict without RNG.
-    pub fn tick_board(
-        &mut self,
-        inputs: &[Option<Direction>],
-        rng: &mut impl Rng,
-    ) -> Result<Vec<BoardEvent>, BoardError> {
-        let (events, spawn_apples) = self.tick_board_no_spawn(inputs)?;
-
+        // spawn replacement apples / walls
         for _ in 0..spawn_apples {
             self.spawn_apple(rng).ok();
             self.apples_eaten += 1;
@@ -395,7 +379,7 @@ impl Board {
             }
         }
 
-        Ok(events)
+        Ok(board_events)
     }
 
     pub fn cells(&self) -> impl Iterator<Item = (IVec2, Cell)> + '_ {
@@ -518,16 +502,15 @@ impl std::fmt::Debug for Board {
                     Cell::Wall => "#".to_string(),
                     Cell::Snake { id, part } => {
                         let c = part.to_string().chars().next().unwrap();
-
-                        use colored::Colorize;
                         format!(
-                            "{}",
-                            c.to_string().color(match id {
-                                0 => "green",
-                                1 => "blue",
-                                2 => "red",
-                                _ => "white",
-                            })
+                            "{}{}",
+                            match id {
+                                0 => "G",
+                                1 => "B",
+                                2 => "R",
+                                _ => "W",
+                            },
+                            c,
                         )
                     }
                     Cell::Apple { .. } => "o".to_string(),
@@ -550,21 +533,21 @@ pub struct Snake {
     pub tail: IVec2,
 }
 
-#[derive(Reflect, PartialEq, Eq, Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum BoardSize {
     Small,
     Medium,
     Large,
 }
 
-#[derive(Reflect, PartialEq, Eq, Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum AppleCount {
     One = 1,
     Three = 3,
     Five = 5,
 }
 
-#[derive(Reflect, PartialEq, Eq, Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum PlayerCount {
     One = 1,
     Two = 2,
@@ -572,7 +555,7 @@ pub enum PlayerCount {
     Four = 4,
 }
 
-#[derive(Reflect, Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct BoardSettings {
     pub board_size: BoardSize,
     pub apples: AppleCount,
@@ -582,9 +565,9 @@ pub struct BoardSettings {
 impl Default for BoardSettings {
     fn default() -> Self {
         Self {
-            board_size: BoardSize::Small,
+            board_size: BoardSize::Medium,
             apples: AppleCount::Five,
-            players: PlayerCount::One,
+            players: PlayerCount::Two,
         }
     }
 }
@@ -612,7 +595,7 @@ pub enum CellError {
     OutOfBounds,
 }
 
-#[derive(PartialEq, Clone, Copy, Deserialize, Serialize, Debug)]
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Deserialize, Serialize, Debug)]
 pub enum Direction {
     Up,
     Down,
@@ -685,105 +668,45 @@ impl TryFrom<usize> for Direction {
 
 #[cfg(test)]
 mod tests {
-    //! Tests covering the deterministic prediction split: that
-    //! `tick_board_no_spawn` matches `tick_board` for everything except RNG
-    //! spawning, and the spawn count is reported correctly.
-
     use super::*;
     use rand::{rngs::StdRng, SeedableRng};
 
-    fn small_inputs(dir: Option<Direction>) -> Vec<Option<Direction>> {
+    fn one_input(dir: Option<Direction>) -> Vec<Option<Direction>> {
         vec![dir]
     }
 
     #[test]
-    fn no_spawn_matches_full_tick_when_nothing_eaten() {
-        let mut a = Board::new(BoardSettings::default());
-        let mut b = a.clone();
-        let inputs = small_inputs(None);
-
-        let (events_no_spawn, spawns) = a.tick_board_no_spawn(&inputs).unwrap();
-        let events_full = b
-            .tick_board(&inputs, &mut StdRng::seed_from_u64(0))
-            .unwrap();
-
-        assert_eq!(spawns, 0, "no apple eaten => no spawn requested");
-        assert_eq!(events_no_spawn, events_full);
-        // Boards must be identical: no spawn means RNG was never consumed.
-        for (pos, cell_a) in a.cells() {
-            let cell_b = b.get(pos).unwrap();
-            let same = match (cell_a, cell_b) {
-                (Cell::Empty, Cell::Empty) => true,
-                (Cell::Wall, Cell::Wall) => true,
-                (Cell::Snake { id: x, part: p }, Cell::Snake { id: y, part: q }) => {
-                    x == y && p == q
-                }
-                (Cell::Apple { natural: x }, Cell::Apple { natural: y }) => x == y,
-                _ => false,
-            };
-            assert!(same, "cell {:?} differs: {:?} vs {:?}", pos, cell_a, cell_b);
-        }
-    }
-
-    #[test]
-    fn no_spawn_reports_apple_count_when_apples_eaten() {
-        // Drive the default snake (faces Right, head at x=3) onto the
-        // pre-placed Small board apple. Small board has apples at columns 6
-        // and 8 on the middle row. The snake needs 3 ticks to reach the first.
-        let settings = BoardSettings {
+    fn tick_with_no_apple_eats_does_not_consume_rng() {
+        // Two boards stepped the same way must end identically, regardless of
+        // RNG state — there's no apple to trigger a spawn.
+        let mut a = Board::new(BoardSettings {
             board_size: BoardSize::Small,
             apples: AppleCount::One,
             players: PlayerCount::One,
-        };
-        let mut board = Board::new(settings);
-        for _ in 0..3 {
-            let (_events, spawns) = board.tick_board_no_spawn(&small_inputs(None)).unwrap();
-            // Until we reach the apple, no spawn.
-            assert_eq!(spawns, 0);
-        }
-        // Step onto the apple.
-        let (events, spawns) = board.tick_board_no_spawn(&small_inputs(None)).unwrap();
-        assert!(events.iter().any(|e| matches!(e, BoardEvent::AppleEaten { .. })));
-        assert_eq!(spawns, 1, "natural apple eaten => one respawn requested");
-        // tick_board_no_spawn does NOT actually place the new apple.
+        });
+        let mut b = a.clone();
+        a.tick(&one_input(None), &mut StdRng::seed_from_u64(0)).unwrap();
+        b.tick(&one_input(None), &mut StdRng::seed_from_u64(999)).unwrap();
+        assert_eq!(a, b);
     }
 
     #[test]
-    fn predict_then_reconcile_matches_authoritative() {
-        // A client running tick_board_no_spawn forward from an authoritative
-        // snapshot ends up at the same board state as the server, modulo any
-        // apple/wall spawns the server did. With no apple ever eaten on this
-        // path, the predicted board should match the server's board exactly.
-        let settings = BoardSettings::default();
-        let mut server = Board::new(settings);
-        let mut rng = StdRng::seed_from_u64(0xC0FFEE);
-
-        // Server ticks forward 5 steps, no apples eaten yet (snake moves
-        // along an empty row before reaching the column with apples).
-        for _ in 0..2 {
-            server
-                .tick_board(&small_inputs(None), &mut rng)
-                .unwrap();
+    fn same_seed_same_inputs_same_state() {
+        // GGRS desync regression: the simulation must be a pure function of
+        // (inputs, rng-state). Two boards advanced through the same 20 ticks
+        // with the same RNG seed and inputs must end byte-identical.
+        let mut a = Board::new(BoardSettings {
+            board_size: BoardSize::Small,
+            apples: AppleCount::One,
+            players: PlayerCount::One,
+        });
+        let mut b = a.clone();
+        let mut rng_a = StdRng::seed_from_u64(0xC0FFEE);
+        let mut rng_b = StdRng::seed_from_u64(0xC0FFEE);
+        for _ in 0..20 {
+            a.tick(&one_input(None), &mut rng_a).unwrap();
+            b.tick(&one_input(None), &mut rng_b).unwrap();
+            assert_eq!(a, b);
         }
-
-        // Client receives this snapshot, then predicts forward 2 more ticks
-        // using tick_board_no_spawn.
-        let mut client = server.clone();
-        for _ in 0..2 {
-            client.tick_board_no_spawn(&small_inputs(None)).unwrap();
-        }
-
-        // Server runs the same 2 ticks authoritatively.
-        for _ in 0..2 {
-            server
-                .tick_board(&small_inputs(None), &mut rng)
-                .unwrap();
-        }
-
-        // Snake position must match.
-        let server_snake = server.snakes()[&0].clone();
-        let client_snake = client.snakes()[&0].clone();
-        assert_eq!(server_snake.head, client_snake.head);
-        assert_eq!(server_snake.parts, client_snake.parts);
     }
 }
