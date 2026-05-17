@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use bevy::{
+    platform::collections::{HashMap, HashSet},
     prelude::*,
-    utils::{hashbrown::HashSet, HashMap},
 };
 use rand::{seq::IteratorRandom, Rng};
 use serde::{Deserialize, Serialize};
@@ -70,7 +70,7 @@ impl Board {
                 [(-1, -1), (-1, -2), (-1, -3), (-1, -4)],
             ];
             for (snake_id, positions) in positions[..snakes].into_iter().enumerate() {
-                for (i, (mut x, mut y)) in positions.iter().enumerate() {
+                for (i, &(mut x, mut y)) in positions.iter().enumerate() {
                     if x < 0 {
                         x += width as i32 - 1;
                     }

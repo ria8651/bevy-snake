@@ -71,7 +71,7 @@ fn update_scores(
     state: Res<State<ClientState>>,
     mut texts: Query<&mut Text, With<ScoreText>>,
 ) {
-    let Ok(mut text) = texts.get_single_mut() else {
+    let Ok(mut text) = texts.single_mut() else {
         return;
     };
     if *state.get() != ClientState::Playing {
@@ -97,7 +97,7 @@ fn toggle_waiting_overlay(
     state: Res<State<ClientState>>,
     mut overlay: Query<&mut Node, With<WaitingOverlay>>,
 ) {
-    let Ok(mut node) = overlay.get_single_mut() else {
+    let Ok(mut node) = overlay.single_mut() else {
         return;
     };
     node.display = match *state.get() {

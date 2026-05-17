@@ -50,10 +50,10 @@ fn drive_state(
     }
 }
 
-fn exit_on_cmd_w(mut exit: EventWriter<AppExit>, keys: Res<ButtonInput<KeyCode>>) {
+fn exit_on_cmd_w(mut exit: MessageWriter<AppExit>, keys: Res<ButtonInput<KeyCode>>) {
     if keys.just_pressed(KeyCode::KeyW)
         && keys.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight])
     {
-        exit.send(AppExit::Success);
+        exit.write(AppExit::Success);
     }
 }

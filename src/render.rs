@@ -1,5 +1,5 @@
 use crate::net::{InputQueues, MovementFrame};
-use bevy::{prelude::*, render::camera::ScalingMode, utils::HashMap};
+use bevy::{camera::ScalingMode, platform::collections::HashMap, prelude::*};
 use bevy_snake::board::{Board, Cell};
 
 pub struct BoardRenderPlugin;
@@ -54,7 +54,7 @@ struct Apple;
 
 fn draw_board(
     mut commands: Commands,
-    mut camera_query: Query<&mut OrthographicProjection, With<MainCamera>>,
+    mut camera_query: Query<&mut Projection, With<MainCamera>>,
     mut apple_query: Query<&mut Transform, With<Apple>>,
     mut board_size: Local<(usize, usize)>,
     mut apples: Local<HashMap<IVec2, Entity>>,
@@ -81,11 +81,14 @@ fn draw_board(
             commands.entity(tile).despawn();
         }
 
-        let mut camera_projection = camera_query.single_mut();
-        camera_projection.scaling_mode = ScalingMode::AutoMin {
-            min_height: board.height() as f32,
-            min_width: board.width() as f32,
-        };
+        if let Ok(mut projection) = camera_query.single_mut() {
+            if let Projection::Orthographic(ortho) = projection.as_mut() {
+                ortho.scaling_mode = ScalingMode::AutoMin {
+                    min_height: board.height() as f32,
+                    min_width: board.width() as f32,
+                };
+            }
+        }
 
         for x in 0..board.width() {
             for y in 0..board.height() {

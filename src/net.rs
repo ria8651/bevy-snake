@@ -12,10 +12,11 @@
 //! - All RNG-driven sim (apple/wall spawning) runs identically on every peer
 //!   via a deterministic seed derived from the sorted peer ids.
 
+use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy_ggrs::{
-    ggrs, GgrsApp, GgrsPlugin, GgrsSchedule, LocalInputs, LocalPlayers, PlayerInputs, ReadInputs,
-    Session,
+    GgrsPlugin, GgrsSchedule, LocalInputs, LocalPlayers, PlayerInputs, ReadInputs, RollbackApp,
+    RollbackFrameRate, Session, ggrs,
 };
 use bevy_matchbox::prelude::*;
 use bevy_snake::board::{Board, BoardSettings, Direction};
@@ -134,7 +135,7 @@ pub struct NetPlugin;
 impl Plugin for NetPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(GgrsPlugin::<GameConfig>::default())
-            .set_rollback_schedule_fps(FPS)
+            .insert_resource(RollbackFrameRate(FPS))
             .rollback_resource_with_clone::<Board>()
             .rollback_resource_with_clone::<MovementFrame>()
             .rollback_resource_with_clone::<RngState>()
@@ -178,7 +179,7 @@ fn wait_for_players(
         return;
     }
 
-    socket.update_peers();
+    let _ = socket.try_update_peers();
     let players = socket.players();
     if players.len() < NUM_PLAYERS {
         return;
@@ -261,7 +262,7 @@ fn read_local_input(
         input |= INPUT_RESTART;
         pending.restart = false;
     }
-    let mut inputs = bevy::utils::HashMap::new();
+    let mut inputs = HashMap::new();
     for handle in local_players.0.iter() {
         inputs.insert(*handle, input);
     }
