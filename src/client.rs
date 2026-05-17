@@ -12,7 +12,10 @@ pub struct ClientPlugin;
 
 impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
-        #[cfg(not(target_arch = "wasm32"))]
+        // In tests the harness lives inside a tokio runtime already;
+        // constructing another one here panics. The observer is also a no-op
+        // in tests (see start_new_wt_tasks), so we don't need the runtime.
+        #[cfg(all(not(target_arch = "wasm32"), not(test)))]
         app.insert_resource(TokioRuntime::default());
         app.add_observer(start_new_wt_tasks);
     }
@@ -55,8 +58,51 @@ impl ClientConnection {
     pub fn receive_update(&mut self) -> Option<NetworkUpdate> {
         self.update_rx.try_recv().ok()
     }
+
+    /// Test-only constructor. Builds a `ClientConnection` whose `command_rx`
+    /// and `update_tx` are already `None` — the observer will short-circuit
+    /// on spawn (see `start_new_wt_tasks`) instead of trying to open a real
+    /// WebTransport connection. The harness retains the other ends of both
+    /// channels and pumps them across a `MockTransport` itself.
+    ///
+    /// Returns: (component, commands flowing OUT, updates flowing IN, a
+    /// cloned command_tx for direct injection from the harness).
+    #[cfg(test)]
+    pub fn with_mock_channels() -> (
+        Self,
+        Receiver<GameCommands>,
+        Sender<NetworkUpdate>,
+        Sender<GameCommands>,
+    ) {
+        let (command_tx, command_rx) = channel(100);
+        let (update_tx, update_rx) = channel(100);
+        let cmd_tx_for_harness = command_tx.clone();
+        (
+            Self {
+                command_tx,
+                command_rx: None,
+                update_tx: None,
+                update_rx,
+                url: "mock://test".to_string(),
+            },
+            command_rx,
+            update_tx,
+            cmd_tx_for_harness,
+        )
+    }
 }
 
+#[cfg(test)]
+fn start_new_wt_tasks(
+    _trigger: Trigger<OnAdd, ClientConnection>,
+    _q: Query<&mut ClientConnection>,
+) {
+    // In tests the harness owns the channels and pumps them across a
+    // MockTransport itself; there's no WebTransport to start. The observer
+    // still fires, but there's nothing to do.
+}
+
+#[cfg(not(test))]
 fn start_new_wt_tasks(
     trigger: Trigger<OnAdd, ClientConnection>,
     mut q: Query<&mut ClientConnection>,
@@ -408,6 +454,7 @@ async fn read_framed_wasm(
     Ok(Some(update))
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn decode_hex(s: &str) -> Vec<u8> {
     (0..s.len())
         .step_by(2)

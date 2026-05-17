@@ -1,7 +1,7 @@
 use crate::{
     client::ClientConnection,
     game::get_wt_url,
-    game::Points,
+    game::{Points, RttEstimator, TickClock},
     ClientState, ConnectionError, GizmoSetting, Settings,
 };
 use bevy::prelude::*;
@@ -9,7 +9,15 @@ use bevy_inspector_egui::{
     bevy_egui::{EguiContexts, EguiPlugin},
     egui::{self, Color32},
 };
-use bevy_snake::board::{AppleCount, Board, BoardSize, PlayerCount};
+use bevy_snake::{
+    board::{AppleCount, Board, BoardSize, PlayerCount},
+    GameCommands,
+};
+use web_time::Instant;
+
+/// Pause sentinel — matches `server::PAUSE_SENTINEL_MS`. Sent in
+/// `SetTickRate` to pause the server tick loop.
+const PAUSE_SENTINEL_MS: u32 = u32::MAX;
 
 pub struct UiPlugin;
 
@@ -28,6 +36,9 @@ fn ui_system(
     points: Res<Points>,
     board: Res<Board>,
     state: Res<State<ClientState>>,
+    tick_clock: Res<TickClock>,
+    rtt: Res<RttEstimator>,
+    mut client_connections: Query<&mut ClientConnection>,
 ) {
     if *state.get() != ClientState::Connected {
         return;
@@ -87,16 +98,22 @@ fn ui_system(
             ui.selectable_value(&mut bs.apples, AppleCount::Five, "Five");
         });
 
+        let prev_interval = settings.tick_interval_ms;
         ui.horizontal(|ui| {
             ui.label("Speed: ");
-            ui.selectable_value(&mut settings.tps, -1.0, "None");
-            ui.selectable_value(&mut settings.tps, 1.0, "Slow");
-            ui.selectable_value(&mut settings.tps, 7.5, "Medium");
-            ui.selectable_value(&mut settings.tps, 10.0, "Fast");
-            // ui.selectable_value(&mut settings.tps, 0.0, "Ramp");
+            ui.selectable_value(&mut settings.tick_interval_ms, None, "None");
+            ui.selectable_value(&mut settings.tick_interval_ms, Some(1000), "Slow");
+            ui.selectable_value(&mut settings.tick_interval_ms, Some(133), "Medium");
+            ui.selectable_value(&mut settings.tick_interval_ms, Some(100), "Fast");
         });
-        settings.tps_ramp = settings.tps == 0.0;
-        settings.do_game_tick = settings.tps != -1.0;
+        if settings.tick_interval_ms != prev_interval {
+            if let Ok(conn) = client_connections.get_single_mut() {
+                let wire_ms = settings.tick_interval_ms.unwrap_or(PAUSE_SENTINEL_MS);
+                conn.send_command(GameCommands::SetTickRate {
+                    tick_interval_ms: wire_ms,
+                });
+            }
+        }
 
         ui.horizontal(|ui| {
             ui.label("Gizmos: ");
@@ -108,6 +125,36 @@ fn ui_system(
         ui.checkbox(&mut settings.ai, "AI");
         ui.checkbox(&mut settings.walls, "Walls");
         ui.checkbox(&mut settings.walls_debug, "Walls debug");
+
+        ui.collapsing("Net / Sync", |ui| {
+            let now = Instant::now();
+            ui.label(format!(
+                "tick_period: {:.1} ms",
+                tick_clock.tick_period.as_secs_f64() * 1000.0
+            ));
+            let rtt_str = rtt
+                .last_rtt_ms
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "—".to_string());
+            let owt_str = rtt
+                .one_way_ms
+                .map(|v| format!("{:.1}", v))
+                .unwrap_or_else(|| "—".to_string());
+            ui.label(format!("RTT: {} ms (OWT: {} ms)", rtt_str, owt_str));
+            ui.label(format!(
+                "phase_error: {:+.2} ms",
+                tick_clock.last_phase_error_ns as f64 / 1e6
+            ));
+            let until = tick_clock.next_tick_at.saturating_duration_since(now);
+            ui.label(format!(
+                "next tick in: {:.1} ms",
+                until.as_secs_f64() * 1000.0
+            ));
+            ui.label(format!(
+                "last snapshot snapped: {}",
+                tick_clock.last_snapped
+            ));
+        });
 
         ui.label("Controls");
         ui.label("Snake 1: WASD to move, LShift to shoot");

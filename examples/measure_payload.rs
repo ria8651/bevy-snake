@@ -13,7 +13,8 @@ fn main() {
             board,
             events: Vec::new(),
             applied_inputs: Vec::new(),
-            timestamp: 1_234_567_890,
+            tick_interval_ms: 133,
+            echo_client_send_ms: Some(1_234_567_890),
         };
         let json = serde_json::to_string(&update).unwrap();
         let bincoded = bincode::serialize(&update).unwrap();

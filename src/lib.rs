@@ -12,10 +12,17 @@ pub enum GameCommands {
     Input {
         tick: u64,
         direction: Direction,
-        timestamp: u64,
+        /// Millisecond delta from a client-local monotonic epoch. The server
+        /// only echoes this back in `GameUpdates::Ticked.echo_client_send_ms`;
+        /// the client subtracts its own current value to compute RTT
+        /// skew-free.
+        client_send_ms: u32,
     },
     RestartGame {
         board_settings: BoardSettings,
+    },
+    SetTickRate {
+        tick_interval_ms: u32,
     },
 }
 
@@ -31,6 +38,12 @@ pub enum GameUpdates {
         /// "server didn't see my input yet" from "I predicted the wrong
         /// direction" during reconcile.
         applied_inputs: Vec<Option<Direction>>,
-        timestamp: u64,
+        /// Current server tick period in milliseconds. Client uses this as the
+        /// PLL frequency setpoint and adapts immediately when it changes.
+        tick_interval_ms: u32,
+        /// Echo of the most recently-processed `Input.client_send_ms` from
+        /// this recipient client. `None` until the client has sent any input.
+        /// Skew-free RTT source.
+        echo_client_send_ms: Option<u32>,
     },
 }

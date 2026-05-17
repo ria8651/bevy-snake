@@ -1,9 +1,10 @@
 use crate::{
-    game::{SnakeInputs, TickTimer},
+    game::{SnakeInputs, TickClock},
     Settings,
 };
 use bevy::{prelude::*, render::camera::ScalingMode, utils::HashMap};
 use bevy_snake::board::{Board, Cell};
+use web_time::Instant;
 
 pub struct BoardRenderPlugin;
 
@@ -72,7 +73,7 @@ fn draw_board(
     snake_parts: Query<Entity, With<SnakePart>>,
     debug_tiles: Query<Entity, With<DebugTile>>,
     render_resources: Res<RenderResources>,
-    tick_timer: Res<TickTimer>,
+    tick_clock: Res<TickClock>,
     time: Res<Time>,
     settings: Res<Settings>,
 ) {
@@ -194,7 +195,7 @@ fn draw_board(
         commands.entity(entity).despawn();
     }
 
-    let mut interpolation = tick_timer.elapsed_secs() / tick_timer.duration().as_secs_f32();
+    let mut interpolation = tick_clock.interpolation(Instant::now());
     interpolation *= settings.interpolation as u32 as f32;
 
     for (snake_id, snake) in board.snakes().into_iter() {

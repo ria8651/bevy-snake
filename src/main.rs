@@ -6,6 +6,9 @@ mod game;
 mod render;
 mod ui;
 
+#[cfg(test)]
+mod integration_tests;
+
 #[derive(States, Default, Debug, Hash, PartialEq, Eq, Clone)]
 pub enum ClientState {
     #[default]
@@ -75,9 +78,10 @@ pub enum GizmoSetting {
 #[derive(Resource, Reflect)]
 pub struct Settings {
     pub interpolation: bool,
-    pub do_game_tick: bool,
-    pub tps: f32,
-    pub tps_ramp: bool,
+    /// Desired tick period in milliseconds. `None` means "paused" — the
+    /// server's tick loop stops, and the UI grays accordingly. Changes are
+    /// sent to the server via `GameCommands::SetTickRate`.
+    pub tick_interval_ms: Option<u32>,
     pub board_settings: BoardSettings,
     pub ai: bool,
     pub gizmos: GizmoSetting,
@@ -111,9 +115,7 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.1, 0.1, 0.1)))
         .insert_resource(Settings {
             interpolation: true,
-            do_game_tick: true,
-            tps: 7.5,
-            tps_ramp: false,
+            tick_interval_ms: Some(133),
             board_settings: BoardSettings::default(),
             ai: true,
             gizmos: GizmoSetting::None,

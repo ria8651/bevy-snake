@@ -11,7 +11,7 @@
 //! The trait lets the game-loop layer treat the wire generically, so tests
 //! can plug in `MockTransport` with configurable drop/reorder/delay.
 
-#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 use crate::{GameCommands, GameUpdates};
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -80,7 +80,9 @@ where
 // Mock transport for tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+// Native-only: depends on tokio's `rt` and `time` features, which are not
+// enabled on wasm builds (wasm uses tokio just for `sync::mpsc`).
+#[cfg(not(target_arch = "wasm32"))]
 pub mod mock {
     //! In-process pair of transports with optional loss/reorder/delay on the
     //! datagram channel. The reliable channel mirrors real QUIC stream
@@ -318,7 +320,7 @@ pub mod mock {
                 .send(GameCommands::Input {
                     tick: i,
                     direction: crate::board::Direction::Up,
-                    timestamp: i,
+                    client_send_ms: i as u32,
                 })
                 .await
                 .unwrap();
@@ -346,7 +348,7 @@ pub mod mock {
                 .send(GameCommands::Input {
                     tick: i,
                     direction: crate::board::Direction::Up,
-                    timestamp: i,
+                    client_send_ms: i as u32,
                 })
                 .await
                 .unwrap();
@@ -371,7 +373,7 @@ pub mod mock {
                 .send(GameCommands::Input {
                     tick: i,
                     direction: crate::board::Direction::Up,
-                    timestamp: i,
+                    client_send_ms: i as u32,
                 })
                 .await
                 .unwrap();
@@ -405,7 +407,7 @@ mod tests {
         let cmd = GameCommands::Input {
             tick: 7,
             direction: Direction::Up,
-            timestamp: 12345,
+            client_send_ms: 12345,
         };
         let bytes = encode_framed(&cmd).unwrap();
         // First 4 bytes are length BE.
@@ -413,11 +415,22 @@ mod tests {
         assert_eq!(len + 4, bytes.len());
         let decoded: GameCommands = decode_payload(&bytes[4..]).unwrap();
         match decoded {
-            GameCommands::Input { tick, direction, timestamp } => {
+            GameCommands::Input { tick, direction, client_send_ms } => {
                 assert_eq!(tick, 7);
                 assert_eq!(direction, Direction::Up);
-                assert_eq!(timestamp, 12345);
+                assert_eq!(client_send_ms, 12345);
             }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn framed_set_tick_rate_round_trips() {
+        let cmd = GameCommands::SetTickRate { tick_interval_ms: 200 };
+        let bytes = encode_framed(&cmd).unwrap();
+        let decoded: GameCommands = decode_payload(&bytes[4..]).unwrap();
+        match decoded {
+            GameCommands::SetTickRate { tick_interval_ms } => assert_eq!(tick_interval_ms, 200),
             _ => panic!("wrong variant"),
         }
     }
@@ -440,7 +453,8 @@ mod tests {
             board: Board::new(BoardSettings::default()),
             events: vec![],
             applied_inputs: vec![Some(Direction::Up), None],
-            timestamp: 42,
+            tick_interval_ms: 133,
+            echo_client_send_ms: Some(42),
         };
         let bytes = encode_framed(&upd).unwrap();
         let decoded: GameUpdates = decode_payload(&bytes[4..]).unwrap();
@@ -448,10 +462,14 @@ mod tests {
             GameUpdates::Ticked {
                 tick,
                 applied_inputs,
+                tick_interval_ms,
+                echo_client_send_ms,
                 ..
             } => {
                 assert_eq!(tick, 5);
                 assert_eq!(applied_inputs, vec![Some(Direction::Up), None]);
+                assert_eq!(tick_interval_ms, 133);
+                assert_eq!(echo_client_send_ms, Some(42));
             }
         }
     }
@@ -464,17 +482,17 @@ mod tests {
         let cmd = GameCommands::Input {
             tick: 13,
             direction: Direction::Left,
-            timestamp: 999,
+            client_send_ms: 999,
         };
         let bytes = bincode::serialize(&cmd).unwrap();
         // Inputs are tiny — must fit comfortably in a datagram MTU (~1200 B).
         assert!(bytes.len() < 100, "input datagram too large: {} bytes", bytes.len());
         let decoded: GameCommands = decode_payload(&bytes).unwrap();
         match decoded {
-            GameCommands::Input { tick, direction, timestamp } => {
+            GameCommands::Input { tick, direction, client_send_ms } => {
                 assert_eq!(tick, 13);
                 assert_eq!(direction, Direction::Left);
-                assert_eq!(timestamp, 999);
+                assert_eq!(client_send_ms, 999);
             }
             _ => panic!("wrong variant"),
         }

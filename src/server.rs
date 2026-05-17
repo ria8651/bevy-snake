@@ -13,13 +13,13 @@ use std::{
     collections::HashMap,
     net::SocketAddr,
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 use tokio::{
     net::TcpListener,
     select,
     sync::mpsc::{channel, Receiver, Sender},
-    time::interval,
+    time::Instant,
 };
 use tower_http::services::ServeDir;
 
@@ -315,18 +315,41 @@ async fn datagram_recv_loop(
     }
 }
 
-async fn game_loop(register_client: Receiver<Client>) {
+pub async fn game_loop(register_client: Receiver<Client>) {
     let mut game_loop = GameLoop::new(register_client).await;
     game_loop.game_loop().await;
 }
+
+/// Sentinel for `SetTickRate { tick_interval_ms }` meaning "pause the tick
+/// loop". The game loop interprets this as a pause flag rather than scheduling
+/// a real 4-billion-ms tick. Restart, a non-pause `SetTickRate`, or a new
+/// client connection unpauses.
+const PAUSE_SENTINEL_MS: u32 = u32::MAX;
+
+/// Hard floor on tick period: 20 ms = 50 Hz. Keeps a runaway `SetTickRate`
+/// from saturating CPU or starving the broadcast channels.
+const MIN_TICK_INTERVAL_MS: u32 = 20;
+/// Hard ceiling on tick period (excluding the pause sentinel): 5 s. Below this
+/// is fine, above it is "use pause instead".
+const MAX_TICK_INTERVAL_MS: u32 = 5_000;
+/// Default tick period when the server starts.
+const DEFAULT_TICK_INTERVAL_MS: u32 = 133;
 
 struct GameLoop {
     clients: Clients,
     register_client: Receiver<Client>,
     queued_inputs: HashMap<usize, Direction>,
+    /// Most recent `client_send_ms` seen from each client, indexed by client
+    /// id. Echoed back per-recipient in `GameUpdates::Ticked.echo_client_send_ms`
+    /// so the client can compute RTT skew-free.
+    last_input_send_ms: HashMap<usize, u32>,
     rng: StdRng,
     board: Board,
     tick: u64,
+    tick_interval: Duration,
+    /// Pause flag — set by `SetTickRate { PAUSE_SENTINEL_MS }`, cleared on a
+    /// concrete rate change, `RestartGame`, or the first client connecting.
+    paused: bool,
 }
 
 impl GameLoop {
@@ -335,16 +358,20 @@ impl GameLoop {
             clients: Clients::new(),
             register_client,
             queued_inputs: HashMap::new(),
+            last_input_send_ms: HashMap::new(),
             rng: StdRng::from_os_rng(),
             board: Board::new(BoardSettings::default()),
             tick: 0,
+            tick_interval: Duration::from_millis(DEFAULT_TICK_INTERVAL_MS as u64),
+            paused: false,
         }
     }
 
     async fn game_loop(&mut self) {
-        let mut ticker = interval(Duration::from_secs_f32(1.0 / 7.5));
-        let mut watchdog = interval(Duration::from_secs(2));
+        let mut next_tick_at = Instant::now() + self.tick_interval;
         loop {
+            let sleep = tokio::time::sleep_until(next_tick_at);
+            tokio::pin!(sleep);
             select! {
                 // register a new client
                 client = self.register_client.recv() => {
@@ -355,32 +382,28 @@ impl GameLoop {
                     let was_empty = self.clients.clients.is_empty();
                     self.register_client(client).await;
                     if was_empty {
-                        info!("first client connected; ticker.reset_immediately()");
-                        ticker.reset_immediately();
+                        info!("first client connected; re-anchoring tick schedule");
+                        next_tick_at = Instant::now() + self.tick_interval;
+                        self.paused = false;
                     }
                 }
                 // process client commands
                 (client, command) = self.clients.next_command() => {
                     if self.process_command(client, command).await {
-                        ticker.reset_immediately();
+                        next_tick_at = Instant::now() + self.tick_interval;
+                        self.paused = false;
                     }
                 }
                 // tick the game board (only when there's at least one client to receive it)
-                _ = ticker.tick(), if !self.clients.clients.is_empty() => {
+                _ = &mut sleep, if !self.paused && !self.clients.clients.is_empty() => {
                     if self.tick().await {
-                        // game over: park the ticker until a RestartGame fires reset_immediately()
-                        ticker.reset_after(Duration::from_secs(1_000_000));
+                        // game over: pause until a RestartGame fires.
+                        self.paused = true;
+                    } else {
+                        // Monotonic catch-up: if a tick was late, the next one
+                        // still lands on the original cadence, not "now + period".
+                        next_tick_at += self.tick_interval;
                     }
-                }
-                // diagnostic watchdog: silence here means the loop is wedged
-                // (most likely inside a broadcast send().await on a slow client)
-                _ = watchdog.tick() => {
-                    info!(
-                        "watchdog: tick={}, clients={}, queued_inputs={}",
-                        self.tick,
-                        self.clients.clients.len(),
-                        self.queued_inputs.len(),
-                    );
                 }
             }
         }
@@ -398,10 +421,9 @@ impl GameLoop {
                 events: Vec::new(),
                 applied_inputs: Vec::new(),
                 tick: self.tick,
-                timestamp: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64,
+                tick_interval_ms: self.tick_interval.as_millis() as u32,
+                // Fresh client hasn't sent any input yet — nothing to echo.
+                echo_client_send_ms: None,
             })
             .await
             .unwrap();
@@ -413,29 +435,31 @@ impl GameLoop {
             GameCommands::Input {
                 direction,
                 tick,
-                timestamp,
+                client_send_ms,
             } => {
-                if tick != self.tick {
+                // Inputs are tagged with the tick the client wants them
+                // applied to, which is the server's *next* tick (self.tick is
+                // the most recently completed one). A perfectly-timed input
+                // tags `self.tick + 1`. Anything else lands too early or too
+                // late, but we accept it either way and the per-tick HashMap
+                // dedup picks last-write-wins.
+                let target = self.tick + 1;
+                if tick != target {
                     warn!(
-                        "client missed game tick; expected {}, got {}",
-                        self.tick, tick
+                        "client tagged unexpected tick; target={}, got={} (Δ={})",
+                        target,
+                        tick,
+                        tick as i64 - target as i64,
                     );
-                    // return;
                 }
 
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64;
                 info!(
-                    "client {} input: {:?} ({}) ({}ms ping)",
-                    client,
-                    direction,
-                    self.tick,
-                    now - timestamp
+                    "client {} input: {:?} (target_tick={}, got={}, client_send_ms={})",
+                    client, direction, target, tick, client_send_ms,
                 );
 
                 self.queued_inputs.insert(client, direction);
+                self.last_input_send_ms.insert(client, client_send_ms);
 
                 false
             }
@@ -445,22 +469,57 @@ impl GameLoop {
                 self.board = Board::new(board_settings);
                 self.tick = 0;
                 self.queued_inputs.clear();
-                self.clients
-                    .broadcast(GameUpdates::Ticked {
-                        tick: self.tick,
-                        board: self.board.clone(),
-                        events: Vec::new(),
-                        applied_inputs: Vec::new(),
-                        timestamp: SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_millis() as u64,
-                    })
-                    .await;
+                self.last_input_send_ms.clear();
+                self.broadcast_per_client(Vec::new(), Vec::new()).await;
 
                 true
             }
+            GameCommands::SetTickRate { tick_interval_ms } => {
+                if tick_interval_ms == PAUSE_SENTINEL_MS {
+                    info!("pausing tick loop");
+                    self.paused = true;
+                    // Don't re-anchor; pause is handled by the `!self.paused`
+                    // guard on the sleep arm.
+                    return false;
+                }
+                let clamped = tick_interval_ms.clamp(MIN_TICK_INTERVAL_MS, MAX_TICK_INTERVAL_MS);
+                if clamped != tick_interval_ms {
+                    warn!(
+                        "tick rate clamped: requested {}ms, applied {}ms",
+                        tick_interval_ms, clamped
+                    );
+                }
+                info!("tick interval -> {}ms", clamped);
+                self.tick_interval = Duration::from_millis(clamped as u64);
+                // Don't re-anchor `next_tick_at`: the in-flight sleep finishes
+                // on the original schedule, and the new period applies after
+                // that. Avoids a visible jitter spike on the client.
+                false
+            }
         }
+    }
+
+    /// Send a `Ticked` snapshot to every connected client. The body of the
+    /// snapshot is identical except for the per-client `echo_client_send_ms`
+    /// — each client gets back the `client_send_ms` of its own most-recently
+    /// processed input, which is the skew-free RTT source.
+    async fn broadcast_per_client(
+        &mut self,
+        events: Vec<BoardEvent>,
+        applied_inputs: Vec<Option<Direction>>,
+    ) {
+        let tick_interval_ms = self.tick_interval.as_millis() as u32;
+        let updates: Vec<GameUpdates> = (0..self.clients.clients.len())
+            .map(|i| GameUpdates::Ticked {
+                tick: self.tick,
+                board: self.board.clone(),
+                events: events.clone(),
+                applied_inputs: applied_inputs.clone(),
+                tick_interval_ms,
+                echo_client_send_ms: self.last_input_send_ms.get(&i).copied(),
+            })
+            .collect();
+        self.clients.send_each(updates).await;
     }
 
     async fn tick(&mut self) -> bool {
@@ -488,18 +547,7 @@ impl GameLoop {
             applied_inputs.pop();
         }
 
-        self.clients
-            .broadcast(GameUpdates::Ticked {
-                board: self.board.clone(),
-                events,
-                applied_inputs,
-                tick: self.tick,
-                timestamp: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64,
-            })
-            .await;
+        self.broadcast_per_client(events, applied_inputs).await;
 
         debug!("ticked board ({}):\n{:?}", self.tick, self.board);
 
@@ -544,11 +592,16 @@ impl Clients {
         }
     }
 
-    async fn broadcast(&mut self, game_update: GameUpdates) {
+    /// Send a distinct update to each client. `updates[i]` goes to client `i`;
+    /// caller must size the vec to match `self.clients.len()`.
+    async fn send_each(&mut self, updates: Vec<GameUpdates>) {
+        assert_eq!(updates.len(), self.clients.len(), "updates length mismatch");
         let mut delete = Vec::new();
-        for (index, client) in self.clients.iter_mut().enumerate() {
+        for (index, (client, update)) in
+            self.clients.iter_mut().zip(updates.into_iter()).enumerate()
+        {
             let start = std::time::Instant::now();
-            let result = client.game_updates.send(game_update.clone()).await;
+            let result = client.game_updates.send(update).await;
             let elapsed = start.elapsed();
             if let Err(e) = result {
                 error!("{}", e);
@@ -557,7 +610,7 @@ impl Clients {
             }
             if elapsed > Duration::from_millis(50) {
                 warn!(
-                    "broadcast to client {} took {}ms — slow consumer (channel cap is 1, so the per-session task is not draining fast enough)",
+                    "send to client {} took {}ms — slow consumer (channel cap is 1, so the per-session task is not draining fast enough)",
                     index,
                     elapsed.as_millis(),
                 );
@@ -569,13 +622,13 @@ impl Clients {
     }
 }
 
-struct Client {
+pub struct Client {
     game_commands: Receiver<GameCommands>,
     game_updates: Sender<GameUpdates>,
 }
 
 impl Client {
-    fn new() -> (Self, Sender<GameCommands>, Receiver<GameUpdates>) {
+    pub fn new() -> (Self, Sender<GameCommands>, Receiver<GameUpdates>) {
         let (game_commands_tx, game_commands_rx) = channel(1);
         let (game_updates_tx, game_updates_rx) = channel(1);
 
@@ -607,9 +660,12 @@ mod tests {
             clients: Clients::new(),
             register_client: register_rx,
             queued_inputs: HashMap::new(),
+            last_input_send_ms: HashMap::new(),
             rng: StdRng::seed_from_u64(0xC0FFEE_u64),
             board: Board::new(settings),
             tick: 0,
+            tick_interval: Duration::from_millis(DEFAULT_TICK_INTERVAL_MS as u64),
+            paused: false,
         }
     }
 
@@ -645,7 +701,7 @@ mod tests {
         GameCommands::Input {
             tick,
             direction,
-            timestamp: 1,
+            client_send_ms: 1,
         }
     }
 
@@ -671,7 +727,7 @@ mod tests {
             let cmd = GameCommands::Input {
                 tick: 42,
                 direction: dir,
-                timestamp: 1_234_567_890,
+                client_send_ms: 1_234_567_890,
             };
             let json = serde_json::to_string(&cmd).unwrap();
             let parsed: GameCommands = serde_json::from_str(&json).unwrap();
@@ -679,14 +735,25 @@ mod tests {
                 GameCommands::Input {
                     tick,
                     direction,
-                    timestamp,
+                    client_send_ms,
                 } => {
                     assert_eq!(tick, 42);
                     assert_eq!(direction, dir);
-                    assert_eq!(timestamp, 1_234_567_890);
+                    assert_eq!(client_send_ms, 1_234_567_890);
                 }
                 _ => panic!("expected Input variant after round-trip"),
             }
+        }
+    }
+
+    #[test]
+    fn protocol_set_tick_rate_command_round_trips() {
+        let cmd = GameCommands::SetTickRate { tick_interval_ms: 200 };
+        let json = serde_json::to_string(&cmd).unwrap();
+        let parsed: GameCommands = serde_json::from_str(&json).unwrap();
+        match parsed {
+            GameCommands::SetTickRate { tick_interval_ms } => assert_eq!(tick_interval_ms, 200),
+            _ => panic!("expected SetTickRate"),
         }
     }
 
@@ -733,7 +800,8 @@ mod tests {
             board: board.clone(),
             events: events.clone(),
             applied_inputs: vec![Some(Direction::Up), None, Some(Direction::Left)],
-            timestamp: 555,
+            tick_interval_ms: 133,
+            echo_client_send_ms: Some(555),
         };
         let json = serde_json::to_string(&upd).unwrap();
         let parsed: GameUpdates = serde_json::from_str(&json).unwrap();
@@ -742,10 +810,12 @@ mod tests {
             board: parsed_board,
             events: parsed_events,
             applied_inputs: parsed_applied,
-            timestamp,
+            tick_interval_ms,
+            echo_client_send_ms,
         } = parsed;
         assert_eq!(tick, 99);
-        assert_eq!(timestamp, 555);
+        assert_eq!(tick_interval_ms, 133);
+        assert_eq!(echo_client_send_ms, Some(555));
         assert_eq!(parsed_events, events);
         assert_eq!(
             parsed_applied,
@@ -780,14 +850,22 @@ mod tests {
             events,
             board,
             applied_inputs,
-            timestamp,
+            tick_interval_ms,
+            echo_client_send_ms,
         } = initial;
         assert_eq!(tick, 0, "initial tick must be 0");
         assert!(events.is_empty(), "initial update has no events");
         assert!(applied_inputs.is_empty(), "initial update has no inputs");
         assert_eq!(board.width(), 10, "default Small board width");
         assert_eq!(board.height(), 9, "default Small board height");
-        assert!(timestamp > 0, "timestamp should be set");
+        assert_eq!(
+            tick_interval_ms, DEFAULT_TICK_INTERVAL_MS,
+            "initial snapshot carries the default tick interval"
+        );
+        assert!(
+            echo_client_send_ms.is_none(),
+            "fresh client has not sent input, nothing to echo"
+        );
     }
 
     #[tokio::test]
@@ -1155,6 +1233,151 @@ mod tests {
         let _ = next_update(&mut rx_a).await;
         let _ = next_update(&mut rx_b).await;
         let _ = next_update(&mut rx_c).await;
+    }
+
+    // ---- tick rate control ----
+
+    #[tokio::test]
+    async fn set_tick_rate_updates_interval() {
+        let mut g = fresh_loop();
+        let (_tx, _rx, _) = register(&mut g).await;
+        assert_eq!(
+            g.tick_interval,
+            Duration::from_millis(DEFAULT_TICK_INTERVAL_MS as u64)
+        );
+        let reset = g
+            .process_command(0, GameCommands::SetTickRate { tick_interval_ms: 200 })
+            .await;
+        assert!(!reset, "SetTickRate must not request a tick re-anchor");
+        assert_eq!(g.tick_interval, Duration::from_millis(200));
+    }
+
+    #[tokio::test]
+    async fn set_tick_rate_clamps_to_safe_range() {
+        let mut g = fresh_loop();
+        let (_tx, _rx, _) = register(&mut g).await;
+        g.process_command(0, GameCommands::SetTickRate { tick_interval_ms: 0 })
+            .await;
+        assert_eq!(
+            g.tick_interval,
+            Duration::from_millis(MIN_TICK_INTERVAL_MS as u64),
+            "0ms must clamp up to MIN_TICK_INTERVAL_MS"
+        );
+        g.process_command(
+            0,
+            GameCommands::SetTickRate {
+                tick_interval_ms: 100_000,
+            },
+        )
+        .await;
+        assert_eq!(
+            g.tick_interval,
+            Duration::from_millis(MAX_TICK_INTERVAL_MS as u64),
+            "huge value (non-sentinel) must clamp down to MAX_TICK_INTERVAL_MS"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_tick_rate_sentinel_pauses() {
+        let mut g = fresh_loop();
+        let (_tx, _rx, _) = register(&mut g).await;
+        assert!(!g.paused);
+        g.process_command(
+            0,
+            GameCommands::SetTickRate {
+                tick_interval_ms: PAUSE_SENTINEL_MS,
+            },
+        )
+        .await;
+        assert!(g.paused, "sentinel must pause the tick loop");
+        // Interval is left unchanged so unpausing restores cadence.
+        assert_eq!(
+            g.tick_interval,
+            Duration::from_millis(DEFAULT_TICK_INTERVAL_MS as u64),
+            "pause does not change the underlying interval"
+        );
+    }
+
+    #[tokio::test]
+    async fn tick_carries_current_interval_in_snapshot() {
+        let mut g = fresh_loop();
+        let (_tx, mut rx, _) = register(&mut g).await;
+        g.process_command(0, GameCommands::SetTickRate { tick_interval_ms: 200 })
+            .await;
+        g.tick().await;
+        let GameUpdates::Ticked {
+            tick_interval_ms, ..
+        } = next_update(&mut rx).await;
+        assert_eq!(tick_interval_ms, 200);
+    }
+
+    #[tokio::test]
+    async fn snapshot_echoes_clients_own_send_ms() {
+        // Two clients send distinct client_send_ms values. Each must get its
+        // own value back in echo_client_send_ms — never the other's.
+        let settings = BoardSettings {
+            board_size: BoardSize::Small,
+            apples: AppleCount::One,
+            players: PlayerCount::Two,
+        };
+        let mut g = fresh_loop_with(settings);
+        let (_tx_a, mut rx_a, _) = register(&mut g).await;
+        let (_tx_b, mut rx_b, _) = register(&mut g).await;
+
+        g.process_command(
+            0,
+            GameCommands::Input {
+                tick: 0,
+                direction: Direction::Up,
+                client_send_ms: 111,
+            },
+        )
+        .await;
+        g.process_command(
+            1,
+            GameCommands::Input {
+                tick: 0,
+                direction: Direction::Up,
+                client_send_ms: 222,
+            },
+        )
+        .await;
+        g.tick().await;
+
+        let GameUpdates::Ticked {
+            echo_client_send_ms: echo_a,
+            ..
+        } = next_update(&mut rx_a).await;
+        let GameUpdates::Ticked {
+            echo_client_send_ms: echo_b,
+            ..
+        } = next_update(&mut rx_b).await;
+        assert_eq!(echo_a, Some(111), "client 0 must see its own send_ms");
+        assert_eq!(echo_b, Some(222), "client 1 must see its own send_ms");
+    }
+
+    #[tokio::test]
+    async fn restart_clears_input_echo() {
+        let mut g = fresh_loop();
+        let (_tx, mut rx, _) = register(&mut g).await;
+        g.process_command(
+            0,
+            GameCommands::Input {
+                tick: 0,
+                direction: Direction::Up,
+                client_send_ms: 42,
+            },
+        )
+        .await;
+        g.process_command(0, restart(BoardSettings::default())).await;
+        let GameUpdates::Ticked {
+            echo_client_send_ms,
+            ..
+        } = next_update(&mut rx).await;
+        assert!(
+            echo_client_send_ms.is_none(),
+            "restart must clear last_input_send_ms"
+        );
     }
 
     #[tokio::test]
