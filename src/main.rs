@@ -9,6 +9,7 @@ mod ui;
 #[derive(States, Default, Debug, Hash, PartialEq, Eq, Clone)]
 pub enum ClientState {
     #[default]
+    Lobby,
     WaitingForOpponent,
     Playing,
 }
@@ -40,13 +41,10 @@ fn drive_state(
     state: Res<State<ClientState>>,
     mut next: ResMut<NextState<ClientState>>,
 ) {
-    let desired = if session.is_some() {
-        ClientState::Playing
-    } else {
-        ClientState::WaitingForOpponent
-    };
-    if *state.get() != desired {
-        next.set(desired);
+    match (state.get(), session.is_some()) {
+        (ClientState::WaitingForOpponent, true) => next.set(ClientState::Playing),
+        (ClientState::Playing, false) => next.set(ClientState::WaitingForOpponent),
+        _ => {}
     }
 }
 

@@ -12,6 +12,7 @@
 //! - All RNG-driven sim (apple/wall spawning) runs identically on every peer
 //!   via a deterministic seed derived from the sorted peer ids.
 
+use crate::ClientState;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy_ggrs::{
@@ -19,7 +20,8 @@ use bevy_ggrs::{
     RollbackFrameRate, Session, ggrs,
 };
 use bevy_matchbox::prelude::*;
-use bevy_snake::board::{Board, BoardSettings, Direction};
+use bevy_snake::board::{Board, Direction, PlayerCount};
+use bevy_snake::settings::GameSettings;
 use rand::{rngs::StdRng, SeedableRng};
 
 /// GGRS config: each player sends a `u8`-packed input, addressed by matchbox
@@ -30,12 +32,6 @@ pub type GameConfig = bevy_ggrs::GgrsConfig<u8, PeerId>;
 /// from the remote peer is visible in ~RTT/60Hz frames, regardless of when
 /// the next movement frame fires.
 pub const FPS: usize = 60;
-/// GGRS frames per snake movement step. 8 @ 60 Hz ≈ 7.5 Hz movement, matching
-/// the feel of the old WebTransport-era tick rate.
-pub const FRAMES_PER_MOVEMENT: u32 = 8;
-/// Number of players in a 1v1 match. Hardcoded for now; matchbox `?next=N`
-/// in [`ROOM_URL_DEFAULT`] must match.
-pub const NUM_PLAYERS: usize = 2;
 /// Frames the local input is delayed before being applied. Set to 0 so local
 /// presses are visible immediately; GGRS will roll back when remote inputs
 /// arrive late instead of forcing every local press to wait. At 60 Hz
@@ -67,23 +63,37 @@ pub fn decode_direction(input: u8) -> Option<Direction> {
 }
 
 /// Counts GGRS frames since the most recent restart. Movement frames fire
-/// when `frame % FRAMES_PER_MOVEMENT == 0` (and `frame > 0`).
-#[derive(Resource, Default, Clone, Hash)]
+/// when `frame % frames_per_movement == 0` (and `frame > 0`).
+#[derive(Resource, Clone, Hash)]
 pub struct MovementFrame {
     pub frame: u32,
     /// Bumped on every restart so different rounds get different deterministic
     /// RNG sequences (the seed is mixed with this).
     pub generation: u32,
+    /// GGRS frames per snake movement step, derived from `GameSettings.speed`
+    /// at session start. Rolled back with the rest of the state — but in
+    /// practice this only ever changes between sessions, not within one.
+    pub frames_per_movement: u32,
+}
+
+impl Default for MovementFrame {
+    fn default() -> Self {
+        Self {
+            frame: 0,
+            generation: 0,
+            frames_per_movement: 8,
+        }
+    }
 }
 
 impl MovementFrame {
     /// 0..1 fraction through the current movement step. Renderer uses this
     /// to interpolate visible snake positions between board ticks.
     pub fn movement_progress(&self) -> f32 {
-        if self.frame == 0 {
+        if self.frame == 0 || self.frames_per_movement == 0 {
             return 0.0;
         }
-        ((self.frame % FRAMES_PER_MOVEMENT) as f32) / FRAMES_PER_MOVEMENT as f32
+        ((self.frame % self.frames_per_movement) as f32) / self.frames_per_movement as f32
     }
 }
 
@@ -134,18 +144,22 @@ pub struct NetPlugin;
 
 impl Plugin for NetPlugin {
     fn build(&self, app: &mut App) {
+        let default_settings = GameSettings::default();
+        let default_players = default_settings.board.players as usize;
         app.add_plugins(GgrsPlugin::<GameConfig>::default())
             .insert_resource(RollbackFrameRate(FPS))
             .rollback_resource_with_clone::<Board>()
             .rollback_resource_with_clone::<MovementFrame>()
             .rollback_resource_with_clone::<RngState>()
             .rollback_resource_with_clone::<InputQueues>()
-            .insert_resource(Board::new(BoardSettings::default()))
+            .insert_resource(Board::new(default_settings.board))
             .insert_resource(MovementFrame::default())
             .insert_resource(RngState::default())
-            .insert_resource(InputQueues(vec![Vec::new(); NUM_PLAYERS]))
+            .insert_resource(InputQueues(vec![Vec::new(); default_players]))
             .insert_resource(PendingInput::default())
-            .add_systems(Startup, start_socket)
+            .insert_resource(default_settings)
+            .add_systems(OnEnter(ClientState::WaitingForOpponent), start_session)
+            .add_systems(OnExit(ClientState::Playing), teardown_session)
             .add_systems(Update, (wait_for_players, buffer_local_input))
             .add_systems(ReadInputs, read_local_input)
             .add_systems(
@@ -155,33 +169,84 @@ impl Plugin for NetPlugin {
     }
 }
 
-fn room_url() -> String {
-    option_env!("MATCHBOX_ROOM_URL")
-        .unwrap_or("ws://localhost:3536/snake?next=2")
-        .to_string()
+fn room_url(settings: &GameSettings) -> String {
+    let base = option_env!("MATCHBOX_ROOM_URL").unwrap_or("ws://localhost:3536/snake");
+    let n = settings.board.players as usize;
+    format!("{}?next={}", base, n)
 }
 
-fn start_socket(mut commands: Commands) {
-    let url = room_url();
-    info!("opening matchbox socket: {}", url);
-    commands.insert_resource(MatchboxSocket::new_unreliable(url));
+/// Entered when the user clicks Play. For 1-player, builds a GGRS synctest
+/// session synchronously and inserts it (drive_state will then advance to
+/// Playing next Update). For 2+ players, opens the matchbox socket — peer
+/// discovery and session build then happens in [`wait_for_players`].
+///
+/// Also resets the rolled-back state (Board / MovementFrame / InputQueues) so
+/// the chosen settings take effect from frame 0.
+fn start_session(
+    mut commands: Commands,
+    settings: Res<GameSettings>,
+    mut board: ResMut<Board>,
+    mut frame: ResMut<MovementFrame>,
+    mut queues: ResMut<InputQueues>,
+) {
+    let n = settings.board.players as usize;
+    *board = Board::new(settings.board);
+    *frame = MovementFrame {
+        frame: 0,
+        generation: 0,
+        frames_per_movement: settings.speed.frames_per_movement(),
+    };
+    *queues = InputQueues(vec![Vec::new(); n]);
+
+    if matches!(settings.board.players, PlayerCount::One) {
+        let session = ggrs::SessionBuilder::<GameConfig>::new()
+            .with_num_players(1)
+            .with_input_delay(INPUT_DELAY)
+            .start_synctest_session()
+            .expect("start_synctest_session");
+        let seed = solo_seed();
+        info!("solo session, seed: {:x}", seed);
+        commands.insert_resource(RngState { seed });
+        commands.insert_resource(Session::SyncTest(session));
+    } else {
+        let url = room_url(&settings);
+        info!("opening matchbox socket: {}", url);
+        commands.insert_resource(MatchboxSocket::new_unreliable(url));
+    }
+}
+
+fn solo_seed() -> u64 {
+    rand::random::<u64>()
+}
+
+/// Removes session and matchbox socket on exiting Playing — currently only
+/// fires when the session itself is removed elsewhere. Keeps things tidy in
+/// case the user later adds a "back to lobby" flow.
+fn teardown_session(mut commands: Commands) {
+    commands.remove_resource::<Session<GameConfig>>();
+    commands.remove_resource::<MatchboxSocket>();
 }
 
 fn wait_for_players(
     mut commands: Commands,
-    mut socket: ResMut<MatchboxSocket>,
+    socket: Option<ResMut<MatchboxSocket>>,
     session: Option<Res<Session<GameConfig>>>,
+    settings: Res<GameSettings>,
 ) {
     if session.is_some() {
         return;
     }
+    let Some(mut socket) = socket else {
+        return;
+    };
     if socket.get_channel(0).is_err() {
         return;
     }
 
+    let expected = settings.board.players as usize;
     let _ = socket.try_update_peers();
     let players = socket.players();
-    if players.len() < NUM_PLAYERS {
+    if players.len() < expected {
         return;
     }
     info!("got {} players, building GGRS session", players.len());
@@ -190,7 +255,7 @@ fn wait_for_players(
     info!("session seed: {:x}", seed);
 
     let mut builder = ggrs::SessionBuilder::<GameConfig>::new()
-        .with_num_players(NUM_PLAYERS)
+        .with_num_players(expected)
         .with_input_delay(INPUT_DELAY)
         .with_desync_detection_mode(ggrs::DesyncDetection::On { interval: 10 });
     for (i, player) in players.into_iter().enumerate() {
@@ -274,16 +339,18 @@ fn apply_restart(
     mut frame: ResMut<MovementFrame>,
     mut queues: ResMut<InputQueues>,
     inputs: Res<PlayerInputs<GameConfig>>,
+    settings: Res<GameSettings>,
 ) {
     let any_restart = inputs.iter().any(|(raw, _)| raw & INPUT_RESTART != 0);
     if !any_restart {
         return;
     }
     info!("restart (frame={}, generation={})", frame.frame, frame.generation);
-    *board = Board::new(BoardSettings::default());
+    let n = settings.board.players as usize;
+    *board = Board::new(settings.board);
     frame.frame = 0;
     frame.generation = frame.generation.wrapping_add(1);
-    *queues = InputQueues(vec![Vec::new(); NUM_PLAYERS]);
+    *queues = InputQueues(vec![Vec::new(); n]);
 }
 
 /// Each GGRS frame, push any newly-pressed direction onto the matching
@@ -293,12 +360,14 @@ fn apply_restart(
 fn enqueue_inputs(
     mut queues: ResMut<InputQueues>,
     inputs: Res<PlayerInputs<GameConfig>>,
+    settings: Res<GameSettings>,
 ) {
-    if queues.0.len() < NUM_PLAYERS {
-        queues.0.resize(NUM_PLAYERS, Vec::new());
+    let n = settings.board.players as usize;
+    if queues.0.len() < n {
+        queues.0.resize(n, Vec::new());
     }
     for (i, (raw, _status)) in inputs.iter().enumerate() {
-        if i >= NUM_PLAYERS {
+        if i >= n {
             break;
         }
         let Some(dir) = decode_direction(*raw) else {
@@ -320,10 +389,12 @@ fn advance_board(
     mut frame: ResMut<MovementFrame>,
     mut queues: ResMut<InputQueues>,
     rng_state: Res<RngState>,
+    settings: Res<GameSettings>,
 ) {
     frame.frame = frame.frame.wrapping_add(1);
 
-    if frame.frame % FRAMES_PER_MOVEMENT != 0 {
+    let fpm = frame.frames_per_movement.max(1);
+    if frame.frame % fpm != 0 {
         return;
     }
 
@@ -336,11 +407,12 @@ fn advance_board(
         ^ (frame.generation as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     let mut rng = StdRng::seed_from_u64(mix);
 
+    let n = settings.board.players as usize;
     // Drain one direction per player from the front of their queue. An empty
     // queue passes `None`, which `Board::tick` interprets as "keep going
     // straight".
-    let mut dirs: Vec<Option<Direction>> = Vec::with_capacity(NUM_PLAYERS);
-    for i in 0..NUM_PLAYERS {
+    let mut dirs: Vec<Option<Direction>> = Vec::with_capacity(n);
+    for i in 0..n {
         let dir = queues
             .0
             .get_mut(i)

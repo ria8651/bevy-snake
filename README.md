@@ -28,46 +28,40 @@ Build the wasm bundle into `web/`:
 ```bash
 cargo build --release --target wasm32-unknown-unknown
 wasm-bindgen --no-typescript --out-name bevy-snake \
-  --out-dir web \
-  --target web target/wasm32-unknown-unknown/release/bevy-snake.wasm
+  --out-dir web --target web \
+  target/wasm32-unknown-unknown/release/bevy-snake.wasm
 ```
 
-Then run the server, which serves `web/` over HTTP and runs the WebTransport endpoint:
+Run the server, which serves `web/` over HTTP **and** runs the matchbox
+signaling server on a separate port:
 
 ```bash
 cargo run --bin server --release
-# open http://localhost:8080
+# open http://localhost:1234
 ```
 
-The server generates a fresh self-signed cert in memory at startup and injects
-its SHA-256 hash into `web/index.html` at request time, so the wasm client picks
-up the current hash automatically. No cert files on disk, no manual
-copy-pasting between restarts.
+Solo (1-player) play skips matchbox entirely. For 2+ player matches all
+clients must reach the matchbox URL compiled into the wasm — by default
+`ws://localhost:3536/snake`. Override at build time via `MATCHBOX_ROOM_URL`
+(the `?next={N}` query string is appended automatically based on the lobby
+player count).
 
-Environment overrides:
+Environment overrides for the server:
 
 | Var | Default | Notes |
 |---|---|---|
-| `WT_ADDR` | `0.0.0.0:1234` | UDP/QUIC bind for WebTransport |
-| `HTTP_ADDR` | `0.0.0.0:8080` | TCP bind for static-file + HTML server |
-| `WT_URL` | `https://localhost:1234` | URL injected into `window.WT_URL` |
-| `CERT_SANS` | `localhost,127.0.0.1` | Comma-separated SANs for the generated cert |
+| `HTTP_ADDR` | `0.0.0.0:1234` | TCP bind for the static-file server (`web/`) |
+| `MATCHBOX_ADDR` | `0.0.0.0:3536` | WebSocket bind for matchbox signaling |
 
-For the production-style setup (e.g. behind a public hostname), set
-`CERT_SANS=bink.eu.org` and `WT_URL=https://bink.eu.org:1234`.
+For a deploy behind a public hostname, override `MATCHBOX_ROOM_URL` at the
+client's compile step, e.g.
 
-The reference WebTransport JS bootstrap (used internally by the wasm client) is:
-
-```js
-const transport = new WebTransport(window.WT_URL, {
-  serverCertificateHashes: [
-    {
-      algorithm: "sha-256",
-      value: new Uint8Array(window.WT_CERT_HASH.match(/../g).map(h => parseInt(h, 16))).buffer,
-    },
-  ],
-});
+```bash
+MATCHBOX_ROOM_URL=wss://bink.eu.org/snake \
+  cargo build --release --target wasm32-unknown-unknown
 ```
+
+Use `wss://` so the WebSocket works from an HTTPS page.
 
 ## License
 
