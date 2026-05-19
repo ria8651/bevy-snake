@@ -10,18 +10,20 @@ mod ui;
 
 #[derive(States, Default, Debug, Hash, PartialEq, Eq, Clone)]
 pub enum ClientState {
-    /// Lobby browser: list of open lobbies + Create / Solo buttons.
+    /// Main menu: game settings + Solo Play / Create Lobby buttons + list
+    /// of open lobbies. The settings the user sees are the live
+    /// `GameSettings` resource, applied directly to whichever path they
+    /// choose (solo, hosting a lobby, or — overwritten — joining one).
     #[default]
     Browsing,
-    /// Settings panel + Host button. We sit here until the server acks
-    /// `CreateLobby` with a `LobbyCreated` message.
-    Creating,
     /// Either waiting in a lobby (host or joiner) for the Start broadcast,
     /// or, post-Start, waiting on `wait_for_players` to finish the
     /// matchbox/GGRS dance.
     WaitingForOpponent,
     Playing,
-    /// Game over screen with "Back to lobbies".
+    /// Game over screen, reached on multiplayer session loss (peer
+    /// disconnect). Solo never gets here — death stays in Playing and the
+    /// in-game side panel handles restart / back-to-menu.
     Finished,
 }
 
@@ -51,46 +53,33 @@ fn main() {
 /// Owns the cross-state transitions that depend on resources outside any
 /// single plugin's purview. The lobby plugin and `wait_for_players` mutate
 /// state directly via `NextState`; this system handles the leftover edges:
-///   - GGRS session presence ↔ `Playing`
-///   - `Playing` → `Finished` when all snakes are dead and no restart
+/// the GGRS session presence ↔ `Playing` correspondence.
+///
+/// All-snakes-dead does NOT transition to Finished. We stay in Playing so
+/// the session stays alive — the in-session restart path
+/// (`PendingInput.restart`, same as the Space key) is rolled forward by
+/// GGRS deterministically, whereas tearing down and re-creating a session
+/// trips a `Time<GgrsTime>` "moved backwards" panic in bevy_ggrs. The UI
+/// shows a "Game over" banner while snakes are empty.
 fn drive_state(
     session: Option<Res<Session<GameConfig>>>,
     state: Res<State<ClientState>>,
     mut next: ResMut<NextState<ClientState>>,
     current: Res<CurrentLobby>,
-    board: Res<bevy_snake::board::Board>,
-    time: Res<Time<Real>>,
-    mut end_acc: Local<f32>,
 ) {
     match (state.get(), session.is_some()) {
         (ClientState::WaitingForOpponent, true) => {
             next.set(ClientState::Playing);
-            *end_acc = 0.0;
         }
         (ClientState::Playing, false) => {
-            // Session was torn down (peer disconnect, restart, etc).
-            // Solo never loses the session here, so this is always a net
-            // game ending.
+            // Session was torn down by something external (peer disconnect,
+            // explicit teardown). Solo never reaches this branch.
             let dest = if current.id.is_some() {
                 ClientState::Finished
             } else {
                 ClientState::Browsing
             };
             next.set(dest);
-            *end_acc = 0.0;
-        }
-        (ClientState::Playing, true) => {
-            // If everyone is dead and no one has restarted within a couple
-            // seconds, the game is effectively over.
-            if board.snakes().is_empty() {
-                *end_acc += time.delta_secs();
-                if *end_acc > 3.0 {
-                    next.set(ClientState::Finished);
-                    *end_acc = 0.0;
-                }
-            } else {
-                *end_acc = 0.0;
-            }
         }
         _ => {}
     }

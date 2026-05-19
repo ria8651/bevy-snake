@@ -141,6 +141,18 @@ pub struct PendingInput {
 /// enough that long-ago presses don't surprise you.
 pub const MAX_QUEUE_LEN: usize = 3;
 
+/// Visual-only knob for the head-lean crossover in the renderer. NOT a
+/// rollback resource — different peers can pick different values without
+/// affecting the simulation.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct InterpolationPhase(pub f32);
+
+impl Default for InterpolationPhase {
+    fn default() -> Self {
+        Self(0.3)
+    }
+}
+
 pub struct NetPlugin;
 
 impl Plugin for NetPlugin {
@@ -158,6 +170,7 @@ impl Plugin for NetPlugin {
             .insert_resource(RngState::default())
             .insert_resource(InputQueues(vec![Vec::new(); default_players]))
             .insert_resource(PendingInput::default())
+            .insert_resource(InterpolationPhase::default())
             .insert_resource(default_settings)
             .add_systems(OnEnter(ClientState::WaitingForOpponent), start_session)
             .add_systems(OnExit(ClientState::Playing), teardown_session)

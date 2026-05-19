@@ -1,8 +1,10 @@
 use crate::ClientState;
 use crate::lobby::{CurrentLobby, LobbyClient, LobbyList, Role};
+use crate::net::{InterpolationPhase, PendingInput};
+use crate::render::{BoardImageNode, BoardRenderTarget};
 use bevy::feathers::{
     FeathersPlugins,
-    controls::{ButtonProps, ButtonVariant, button, radio},
+    controls::{ButtonProps, ButtonVariant, SliderProps, button, radio, slider},
     dark_theme::create_dark_theme,
     theme::{ThemeBackgroundColor, ThemedText, UiTheme},
     tokens,
@@ -10,7 +12,7 @@ use bevy::feathers::{
 use bevy::input_focus::tab_navigation::TabGroup;
 use bevy::prelude::*;
 use bevy::ui::Checked;
-use bevy::ui_widgets::{Activate, RadioGroup, ValueChange, observe};
+use bevy::ui_widgets::{Activate, RadioGroup, SliderPrecision, SliderValue, ValueChange, observe};
 use bevy_snake::board::{AppleCount, Board, BoardSize};
 use bevy_snake::lobby_proto::{LobbyState, MAX_PLAYERS};
 use bevy_snake::settings::{GameSettings, Speed};
@@ -24,8 +26,6 @@ impl Plugin for UiPlugin {
             .insert_resource(BrowserListRev(u64::MAX))
             .add_systems(OnEnter(ClientState::Browsing), spawn_browser)
             .add_systems(OnExit(ClientState::Browsing), despawn::<BrowserUi>)
-            .add_systems(OnEnter(ClientState::Creating), spawn_creating)
-            .add_systems(OnExit(ClientState::Creating), despawn::<CreatingUi>)
             .add_systems(OnEnter(ClientState::WaitingForOpponent), spawn_waiting)
             .add_systems(OnExit(ClientState::WaitingForOpponent), despawn::<WaitingUi>)
             .add_systems(OnEnter(ClientState::Playing), spawn_score_hud)
@@ -35,10 +35,11 @@ impl Plugin for UiPlugin {
             .add_systems(
                 Update,
                 (
-                    pre_check_radios.run_if(in_state(ClientState::Creating)),
-                    update_browser.run_if(in_state(ClientState::Browsing)),
+                    (pre_check_radios, update_browser)
+                        .run_if(in_state(ClientState::Browsing)),
                     update_waiting.run_if(in_state(ClientState::WaitingForOpponent)),
-                    update_scores.run_if(in_state(ClientState::Playing)),
+                    (update_scores, update_game_over_banner)
+                        .run_if(in_state(ClientState::Playing)),
                 ),
             );
     }
@@ -49,9 +50,6 @@ struct BrowserUi;
 
 #[derive(Component)]
 struct BrowserList;
-
-#[derive(Component)]
-struct CreatingUi;
 
 #[derive(Component)]
 struct WaitingUi;
@@ -73,6 +71,12 @@ struct ScoreHudUi;
 
 #[derive(Component)]
 struct ScoreText;
+
+/// "Game over" overlay that appears within Playing state when the board has
+/// no snakes left. Visibility-toggled by `update_game_over_banner` instead
+/// of spawned/despawned so we don't churn entities every frame.
+#[derive(Component)]
+struct GameOverBanner;
 
 #[derive(Component)]
 struct FinishedUi;
@@ -97,7 +101,7 @@ fn despawn<T: Component>(query: Query<Entity, With<T>>, mut commands: Commands) 
     }
 }
 
-// ── Browser ─────────────────────────────────────────────────────────────
+// ── Browser (main menu: settings + buttons + lobby list) ────────────────
 
 fn spawn_browser(mut commands: Commands, mut rev: ResMut<BrowserListRev>) {
     rev.0 = u64::MAX; // force the next update_browser pass to populate the list
@@ -107,8 +111,17 @@ fn spawn_browser(mut commands: Commands, mut rev: ResMut<BrowserListRev>) {
             position_type: PositionType::Absolute,
             width: Val::Percent(100.0),
             height: Val::Percent(100.0),
+            // Column so `justify_content` works on the vertical axis and
+            // `align_items` on the horizontal axis. Top-aligned (FlexStart)
+            // because with the settings inlined the column can overflow
+            // short viewports; center-aligned would push the heading off
+            // the top of the screen.
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
+            justify_content: JustifyContent::FlexStart,
+            padding: UiRect::top(Val::Px(40.0)),
+            overflow: Overflow::scroll_y(),
             ..default()
         },
         ThemeBackgroundColor(tokens::WINDOW_BG),
@@ -120,7 +133,7 @@ fn spawn_browser(mut commands: Commands, mut rev: ResMut<BrowserListRev>) {
                 align_items: AlignItems::Stretch,
                 row_gap: Val::Px(12.0),
                 padding: UiRect::all(Val::Px(20.0)),
-                min_width: Val::Px(420.0),
+                min_width: Val::Px(440.0),
                 ..default()
             },
             children![
@@ -132,6 +145,15 @@ fn spawn_browser(mut commands: Commands, mut rev: ResMut<BrowserListRev>) {
                         ..default()
                     },
                 ),
+                // The same settings groups the Creating page used to host;
+                // they mutate the live GameSettings resource, which both
+                // Solo Play and Create Lobby read at launch time.
+                section_label("Board size"),
+                board_size_group(),
+                section_label("Apples"),
+                apple_count_group(),
+                section_label("Speed"),
+                speed_group(),
                 browser_buttons_row(),
                 (
                     BrowserList,
@@ -154,6 +176,7 @@ fn browser_buttons_row() -> impl Bundle {
             display: Display::Flex,
             flex_direction: FlexDirection::Row,
             column_gap: Val::Px(8.0),
+            margin: UiRect::top(Val::Px(8.0)),
             ..default()
         },
         children![
@@ -164,18 +187,6 @@ fn browser_buttons_row() -> impl Bundle {
                         ..default()
                     },
                     (),
-                    Spawn((Text::new("Create lobby"), ThemedText)),
-                ),
-                observe(
-                    |_: On<Activate>, mut next: ResMut<NextState<ClientState>>| {
-                        next.set(ClientState::Creating);
-                    },
-                ),
-            ),
-            (
-                button(
-                    ButtonProps::default(),
-                    (),
                     Spawn((Text::new("Solo play"), ThemedText)),
                 ),
                 observe(
@@ -185,6 +196,22 @@ fn browser_buttons_row() -> impl Bundle {
                         current.clear();
                         current.role = Role::Solo;
                         next.set(ClientState::WaitingForOpponent);
+                    },
+                ),
+            ),
+            (
+                button(
+                    ButtonProps::default(),
+                    (),
+                    Spawn((Text::new("Create lobby"), ThemedText)),
+                ),
+                // Skips straight to creating a lobby with the live settings;
+                // the LobbyCreated server ack flips us into WaitingForOpponent.
+                observe(
+                    |_: On<Activate>,
+                     mut client: NonSendMut<LobbyClient>,
+                     settings: Res<GameSettings>| {
+                        client.create_lobby(*settings);
                     },
                 ),
             ),
@@ -297,95 +324,7 @@ fn state_label(s: LobbyState) -> &'static str {
     }
 }
 
-// ── Creating (settings panel + Host button) ─────────────────────────────
-
-fn spawn_creating(mut commands: Commands) {
-    commands.spawn((
-        CreatingUi,
-        Node {
-            position_type: PositionType::Absolute,
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            ..default()
-        },
-        ThemeBackgroundColor(tokens::WINDOW_BG),
-        TabGroup::default(),
-        children![(
-            Node {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                align_items: AlignItems::Stretch,
-                row_gap: Val::Px(12.0),
-                padding: UiRect::all(Val::Px(20.0)),
-                min_width: Val::Px(280.0),
-                ..default()
-            },
-            children![
-                (
-                    Text::new("Create lobby"),
-                    ThemedText,
-                    TextFont {
-                        font_size: 24.0,
-                        ..default()
-                    },
-                ),
-                section_label("Board size"),
-                board_size_group(),
-                section_label("Apples"),
-                apple_count_group(),
-                section_label("Speed"),
-                speed_group(),
-                (
-                    Node {
-                        display: Display::Flex,
-                        flex_direction: FlexDirection::Row,
-                        column_gap: Val::Px(8.0),
-                        margin: UiRect::top(Val::Px(8.0)),
-                        ..default()
-                    },
-                    children![
-                        (
-                            button(
-                                ButtonProps {
-                                    variant: ButtonVariant::Primary,
-                                    ..default()
-                                },
-                                (),
-                                Spawn((Text::new("Host"), ThemedText)),
-                            ),
-                            observe(
-                                |_: On<Activate>,
-                                 mut client: NonSendMut<LobbyClient>,
-                                 settings: Res<GameSettings>| {
-                                    client.create_lobby(*settings);
-                                    // We don't transition yet — the
-                                    // LobbyCreated ack does that, so the
-                                    // user knows the host succeeded before
-                                    // we move on.
-                                },
-                            ),
-                        ),
-                        (
-                            button(
-                                ButtonProps::default(),
-                                (),
-                                Spawn((Text::new("Cancel"), ThemedText)),
-                            ),
-                            observe(
-                                |_: On<Activate>,
-                                 mut next: ResMut<NextState<ClientState>>| {
-                                    next.set(ClientState::Browsing);
-                                },
-                            ),
-                        ),
-                    ],
-                ),
-            ],
-        )],
-    ));
-}
+// ── Settings groups (radio rows for board / apples / speed) ─────────────
 
 fn section_label(text: &str) -> impl Bundle {
     (
@@ -405,8 +344,8 @@ fn section_label(text: &str) -> impl Bundle {
 fn radio_row() -> Node {
     Node {
         display: Display::Flex,
-        flex_direction: FlexDirection::Column,
-        row_gap: Val::Px(4.0),
+        flex_direction: FlexDirection::Row,
+        column_gap: Val::Px(12.0),
         ..default()
     }
 }
@@ -521,8 +460,8 @@ fn sync_checked(
     }
 }
 
-/// Fires once per group after the Creating panel is spawned: marks the
-/// radio matching the current `GameSettings` as `Checked`. Uses
+/// Fires once per group after the Browsing settings panel is spawned:
+/// marks the radio matching the current `GameSettings` as `Checked`. Uses
 /// `Added<...>` so we only do the work for newly-spawned radios.
 fn pre_check_radios(
     settings: Res<GameSettings>,
@@ -552,6 +491,7 @@ fn pre_check_radios(
 
 fn spawn_waiting(mut commands: Commands, current: Res<CurrentLobby>) {
     let is_host = current.role == Role::Host;
+    let solo = current.role == Role::Solo;
     commands
         .spawn((
             WaitingUi,
@@ -598,86 +538,87 @@ fn spawn_waiting(mut commands: Commands, current: Res<CurrentLobby>) {
                 },
                 TextColor(Color::srgba(1.0, 1.0, 1.0, 0.8)),
             ));
-            p.spawn((
-                Node {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(12.0),
-                    margin: UiRect::top(Val::Px(16.0)),
-                    ..default()
-                },
-                children![
-                    // One button regardless of role — its label and click
-                    // behavior pivot on `is_host`. Joiner taps are silently
-                    // ignored. Both branches share an observer signature so
-                    // the children![] macro accepts them in either case.
-                    (
-                        StartButton,
-                        button(
-                            ButtonProps {
-                                variant: if is_host {
-                                    ButtonVariant::Primary
-                                } else {
-                                    ButtonVariant::Normal
+            // Solo flashes through this state for a single frame on its
+            // way from WaitingForOpponent → Playing, so the Start/Leave
+            // row would just be a misleading flicker. Skip it entirely.
+            if !solo {
+                p.spawn((
+                    Node {
+                        display: Display::Flex,
+                        flex_direction: FlexDirection::Row,
+                        column_gap: Val::Px(12.0),
+                        margin: UiRect::top(Val::Px(16.0)),
+                        ..default()
+                    },
+                    children![
+                        (
+                            StartButton,
+                            button(
+                                ButtonProps {
+                                    variant: if is_host {
+                                        ButtonVariant::Primary
+                                    } else {
+                                        ButtonVariant::Normal
+                                    },
+                                    ..default()
                                 },
-                                ..default()
-                            },
-                            (),
-                            Spawn((
-                                Text::new(if is_host {
-                                    "Start (need 2+ players)"
-                                } else {
-                                    "Waiting for host…"
-                                }),
-                                ThemedText,
-                                StartButtonLabel,
-                            )),
+                                (),
+                                Spawn((
+                                    Text::new(if is_host {
+                                        "Start (need 2+ players)"
+                                    } else {
+                                        "Waiting for host…"
+                                    }),
+                                    ThemedText,
+                                    StartButtonLabel,
+                                )),
+                            ),
+                            observe(
+                                move |_: On<Activate>,
+                                      mut client: NonSendMut<LobbyClient>,
+                                      list: Res<LobbyList>,
+                                      current: Res<CurrentLobby>| {
+                                    if !is_host {
+                                        return;
+                                    }
+                                    let Some(id) = current.id.clone() else {
+                                        return;
+                                    };
+                                    let count = list
+                                        .lobbies
+                                        .iter()
+                                        .find(|l| l.id == id)
+                                        .map(|l| l.players_present)
+                                        .unwrap_or(0);
+                                    if count < 2 {
+                                        return;
+                                    }
+                                    client.start_lobby(id);
+                                },
+                            ),
                         ),
-                        observe(
-                            move |_: On<Activate>,
-                                  mut client: NonSendMut<LobbyClient>,
-                                  list: Res<LobbyList>,
-                                  current: Res<CurrentLobby>| {
-                                if !is_host {
-                                    return;
-                                }
-                                let Some(id) = current.id.clone() else {
-                                    return;
-                                };
-                                let count = list
-                                    .lobbies
-                                    .iter()
-                                    .find(|l| l.id == id)
-                                    .map(|l| l.players_present)
-                                    .unwrap_or(0);
-                                if count < 2 {
-                                    return;
-                                }
-                                client.start_lobby(id);
-                            },
+                        (
+                            button(
+                                ButtonProps::default(),
+                                (),
+                                Spawn((Text::new("Leave"), ThemedText)),
+                            ),
+                            observe(
+                                |_: On<Activate>,
+                                 mut client: NonSendMut<LobbyClient>,
+                                 mut current: ResMut<CurrentLobby>,
+                                 mut next: ResMut<NextState<ClientState>>| {
+                                    if let Some(id) = current.id.clone() {
+                                        client.leave_lobby(id);
+                                    }
+                                    current.clear();
+                                    next.set(ClientState::Browsing);
+                                },
+                            ),
                         ),
-                    ),
-                    (
-                        button(
-                            ButtonProps::default(),
-                            (),
-                            Spawn((Text::new("Leave"), ThemedText)),
-                        ),
-                        observe(
-                            |_: On<Activate>,
-                             mut client: NonSendMut<LobbyClient>,
-                             mut current: ResMut<CurrentLobby>,
-                             mut next: ResMut<NextState<ClientState>>| {
-                                if let Some(id) = current.id.clone() {
-                                    client.leave_lobby(id);
-                                }
-                                current.clear();
-                                next.set(ClientState::Browsing);
-                            },
-                        ),
-                    ),
-                ],
-            ));
+                    ],
+                ));
+            }
                 });
         });
 }
@@ -740,25 +681,192 @@ fn update_waiting(
     }
 }
 
-// ── Score HUD ───────────────────────────────────────────────────────────
+// ── Playing: board + side panel ─────────────────────────────────────────
 
-fn spawn_score_hud(mut commands: Commands) {
-    commands.spawn((
-        ScoreHudUi,
-        ScoreText,
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(8.0),
-            left: Val::Px(8.0),
-            ..default()
-        },
-        Text::new(""),
-        TextFont {
-            font_size: 22.0,
-            ..default()
-        },
-        TextColor(Color::WHITE),
-    ));
+fn spawn_score_hud(
+    mut commands: Commands,
+    board_target: Res<BoardRenderTarget>,
+    phase: Res<InterpolationPhase>,
+) {
+    let initial_phase = phase.0;
+    commands
+        .spawn((
+            ScoreHudUi,
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                ..default()
+            },
+            TabGroup::default(),
+        ))
+        .with_children(|root| {
+            // Left: the board, displayed from the off-screen texture. Fills
+            // remaining horizontal space; `BoardImageNode` is the marker
+            // `resize_board_texture` looks for. Wrap in a positioning
+            // container so the Game Over banner can overlay it without
+            // displacing layout.
+            root.spawn((
+                Node {
+                    flex_grow: 1.0,
+                    height: Val::Percent(100.0),
+                    position_type: PositionType::Relative,
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    BoardImageNode,
+                    ImageNode::new(board_target.handle.clone()),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(0.0),
+                        top: Val::Px(0.0),
+                        right: Val::Px(0.0),
+                        bottom: Val::Px(0.0),
+                        ..default()
+                    },
+                ));
+                p.spawn((
+                    GameOverBanner,
+                    Node {
+                        // Toggled to Display::Flex by update_game_over_banner
+                        // when snakes empty. Use Display rather than
+                        // Visibility because Visibility::Hidden seems to
+                        // leave the inner Text in an unmeasured state, so
+                        // it ends up rendering as an empty bordered box.
+                        // Display::None fully removes from layout; flipping
+                        // to Flex triggers a fresh layout pass that
+                        // measures the text.
+                        display: Display::None,
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        padding: UiRect::axes(Val::Px(24.0), Val::Px(16.0)),
+                        border: UiRect::all(Val::Px(2.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
+                    BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.3)),
+                ))
+                .with_children(|p| {
+                    p.spawn((
+                        Text::new("Game over"),
+                        ThemedText,
+                        TextFont {
+                            font_size: 42.0,
+                            ..default()
+                        },
+                        TextColor(Color::WHITE),
+                    ));
+                });
+            });
+
+            // Right: control panel.
+            root.spawn((
+                Node {
+                    width: Val::Px(260.0),
+                    height: Val::Percent(100.0),
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Stretch,
+                    row_gap: Val::Px(12.0),
+                    padding: UiRect::all(Val::Px(16.0)),
+                    ..default()
+                },
+                ThemeBackgroundColor(tokens::WINDOW_BG),
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    ScoreText,
+                    Text::new(""),
+                    TextFont {
+                        font_size: 22.0,
+                        ..default()
+                    },
+                    TextColor(Color::WHITE),
+                ));
+                p.spawn(section_label("Feel"));
+                p.spawn(section_label("Lean crossover"));
+                // Feathers' `slider` and `button` both set `flex_grow: 1.0`
+                // on their root Node, which means in this Column container
+                // they'd each consume an equal slice of the panel's height.
+                // Wrap each in a default Node so the *wrapper* sits at
+                // flex_grow: 0 and the widget can still grow within it
+                // (filling the wrapper's width, no extra vertical space).
+                p.spawn(Node::default()).with_children(|p| {
+                    p.spawn((
+                        slider(
+                            SliderProps {
+                                value: initial_phase,
+                                min: 0.05,
+                                max: 0.95,
+                            },
+                            // Feathers' `update_slider_pos` query requires
+                            // `&SliderPrecision` (not Optional), so without
+                            // this the slider's text + gradient never update
+                            // and the slider looks broken even though
+                            // dragging is actually changing the value.
+                            SliderPrecision(2),
+                        ),
+                        observe(
+                            |change: On<ValueChange<f32>>,
+                             mut phase: ResMut<InterpolationPhase>,
+                             mut commands: Commands| {
+                                // bevy_ui_widgets sliders fire ValueChange
+                                // but DON'T write back SliderValue — that's
+                                // delegated to whoever handles the event.
+                                // Without this insert the slider visual is
+                                // frozen at the initial value forever.
+                                phase.0 = change.value;
+                                commands
+                                    .entity(change.source)
+                                    .insert(SliderValue(change.value));
+                            },
+                        ),
+                    ));
+                });
+                p.spawn(Node::default()).with_children(|p| {
+                    p.spawn((
+                        button(
+                            ButtonProps {
+                                variant: ButtonVariant::Primary,
+                                ..default()
+                            },
+                            (),
+                            Spawn((Text::new("Restart"), ThemedText)),
+                        ),
+                        observe(|_: On<Activate>, mut pending: ResMut<PendingInput>| {
+                            // Same path as the Space key. Works whether or
+                            // not snakes are currently alive — GGRS rolls
+                            // forward the restart bit on the next frame.
+                            pending.restart = true;
+                        }),
+                    ));
+                });
+                p.spawn(Node::default()).with_children(|p| {
+                    p.spawn((
+                        button(
+                            ButtonProps::default(),
+                            (),
+                            Spawn((Text::new("Back to lobby"), ThemedText)),
+                        ),
+                        observe(
+                            |_: On<Activate>,
+                             mut client: NonSendMut<LobbyClient>,
+                             mut current: ResMut<CurrentLobby>,
+                             mut next: ResMut<NextState<ClientState>>| {
+                                leave_to_browser(&mut client, &mut current, &mut next);
+                            },
+                        ),
+                    ));
+                });
+            });
+        });
 }
 
 fn update_scores(board: Res<Board>, mut texts: Query<&mut Text, With<ScoreText>>) {
@@ -773,19 +881,57 @@ fn update_scores(board: Res<Board>, mut texts: Query<&mut Text, With<ScoreText>>
         let score = snake.parts.len().saturating_sub(4);
         lines.push(format!("P{}: {}", id, score));
     }
-    if lines.is_empty() {
-        lines.push("Press Space to restart".to_string());
-    }
     text.0 = lines.join("\n");
+}
+
+/// Show the Game Over banner iff no snakes are left on the board. The
+/// session stays alive throughout — clicking Restart (or pressing Space)
+/// hides the banner again once `apply_restart` re-seeds the board.
+fn update_game_over_banner(
+    board: Res<Board>,
+    mut banner: Query<&mut Node, With<GameOverBanner>>,
+) {
+    let Ok(mut node) = banner.single_mut() else {
+        return;
+    };
+    let want = if board.snakes().is_empty() {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    if node.display != want {
+        node.display = want;
+    }
+}
+
+/// Shared "exit the active game and return to the lobby browser" flow. Used
+/// by the in-game Back-to-Lobby button and by the Finished modal.
+fn leave_to_browser(
+    client: &mut LobbyClient,
+    current: &mut CurrentLobby,
+    next: &mut NextState<ClientState>,
+) {
+    if current.role == Role::Host {
+        if let Some(id) = current.id.clone() {
+            client.mark_finished(id);
+        }
+    }
+    if let Some(id) = current.id.clone() {
+        client.leave_lobby(id);
+    }
+    current.clear();
+    next.set(ClientState::Browsing);
 }
 
 // ── Finished ────────────────────────────────────────────────────────────
 
+/// Finished is only reached when the GGRS session is torn down externally —
+/// in practice, a multiplayer peer disconnect. Solo never enters Finished
+/// (the session stays alive across death and the in-Playing Game Over
+/// banner handles the visual). So the only useful action here is going
+/// back to the lobby browser; restart isn't possible because the session
+/// is gone.
 fn spawn_finished(mut commands: Commands) {
-    // Outer = fullscreen dim overlay; inner = auto-sized column that holds
-    // the actual content. Without the inner wrapper, Feathers' button
-    // flex-grows to fill the outer's height — that's how we ended up with
-    // a screen-tall "Back to lobbies" button.
     commands
         .spawn((
             FinishedUi,
@@ -800,52 +946,41 @@ fn spawn_finished(mut commands: Commands) {
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
         ))
         .with_children(|p| {
-            p.spawn((
-                Node {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    align_items: AlignItems::Center,
-                    row_gap: Val::Px(16.0),
-                    ..default()
-                },
-                children![
-                    (
-                        Text::new("Game over"),
-                        TextFont {
-                            font_size: 36.0,
+            p.spawn((Node {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: Val::Px(16.0),
+                ..default()
+            },))
+            .with_children(|p| {
+                p.spawn((
+                    Text::new("Game over"),
+                    TextFont {
+                        font_size: 36.0,
+                        ..default()
+                    },
+                    TextColor(Color::WHITE),
+                ));
+                p.spawn((
+                    button(
+                        ButtonProps {
+                            variant: ButtonVariant::Primary,
                             ..default()
                         },
-                        TextColor(Color::WHITE),
+                        (),
+                        Spawn((Text::new("Back to lobbies"), ThemedText)),
                     ),
-                    (
-                        button(
-                            ButtonProps {
-                                variant: ButtonVariant::Primary,
-                                ..default()
-                            },
-                            (),
-                            Spawn((Text::new("Back to lobbies"), ThemedText)),
-                        ),
-                        observe(
-                            |_: On<Activate>,
-                             mut client: NonSendMut<LobbyClient>,
-                             mut current: ResMut<CurrentLobby>,
-                             mut next: ResMut<NextState<ClientState>>| {
-                                if current.role == Role::Host {
-                                    if let Some(id) = current.id.clone() {
-                                        client.mark_finished(id);
-                                    }
-                                }
-                                if let Some(id) = current.id.clone() {
-                                    client.leave_lobby(id);
-                                }
-                                current.clear();
-                                next.set(ClientState::Browsing);
-                            },
-                        ),
+                    observe(
+                        |_: On<Activate>,
+                         mut client: NonSendMut<LobbyClient>,
+                         mut current: ResMut<CurrentLobby>,
+                         mut next: ResMut<NextState<ClientState>>| {
+                            leave_to_browser(&mut client, &mut current, &mut next);
+                        },
                     ),
-                ],
-            ));
+                ));
+            });
         });
 }
 
