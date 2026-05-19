@@ -32,9 +32,9 @@ wasm-bindgen --no-typescript --out-name bevy-snake \
   target/wasm32-unknown-unknown/release/bevy-snake.wasm
 ```
 
-Run the server, which serves `web/` over HTTP, runs the matchbox signaling
-server on a separate port, **and** hosts the lobby directory at
-`/lobbies`:
+Run the server, which serves `web/` over HTTP, hosts the lobby directory
+at `/lobbies`, **and** reverse-proxies matchbox signaling at
+`/signaling/{room}` (the matchbox server itself binds to loopback only):
 
 ```bash
 cargo run --bin server --release
@@ -60,8 +60,8 @@ The main menu is a live lobby browser. To play multiplayer:
 
 | Var | Default | Notes |
 |---|---|---|
-| `HTTP_ADDR` | `0.0.0.0:1234` | TCP bind for the static-file server + lobby WS |
-| `MATCHBOX_ADDR` | `0.0.0.0:3536` | WebSocket bind for matchbox signaling |
+| `HTTP_ADDR` | `0.0.0.0:1234` | TCP bind for the static-file server, lobby WS, and signaling proxy |
+| `MATCHBOX_ADDR` | `127.0.0.1:3536` | Bind for the matchbox signaling server. Loopback by default — the HTTP server proxies `/signaling/{room}` to it. Set to `0.0.0.0:3536` to expose it directly. |
 
 ## Client compile-time URLs
 
@@ -69,14 +69,14 @@ For a deploy behind a public hostname, override the URLs at the client's
 compile step:
 
 ```bash
-MATCHBOX_ROOM_URL=wss://bink.eu.org \
+MATCHBOX_ROOM_URL=wss://bink.eu.org/signaling \
 LOBBY_WS_URL=wss://bink.eu.org/lobbies \
   cargo build --release --target wasm32-unknown-unknown
 ```
 
 | Var | Default | Notes |
 |---|---|---|
-| `MATCHBOX_ROOM_URL` | `ws://localhost:3536` | Base of the matchbox signaling server. Each lobby appends its own room name (`/lobby-{id}`). |
+| `MATCHBOX_ROOM_URL` | `ws://localhost:1234/signaling` | Base of the matchbox signaling server. Defaults to the same-origin proxied path; set to e.g. `wss://example.org/signaling` for cross-origin deploys. Each lobby appends its own room name (`/lobby-{id}`). |
 | `LOBBY_WS_URL` | `ws://localhost:1234/lobbies` | Lobby directory WebSocket endpoint. |
 
 Use `wss://` so the WebSockets work from an HTTPS page.

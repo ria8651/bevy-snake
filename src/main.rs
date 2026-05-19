@@ -58,9 +58,8 @@ fn main() {
 /// All-snakes-dead does NOT transition to Finished. We stay in Playing so
 /// the session stays alive — the in-session restart path
 /// (`PendingInput.restart`, same as the Space key) is rolled forward by
-/// GGRS deterministically, whereas tearing down and re-creating a session
-/// trips a `Time<GgrsTime>` "moved backwards" panic in bevy_ggrs. The UI
-/// shows a "Game over" banner while snakes are empty.
+/// GGRS deterministically. The UI shows a "Game over" banner while snakes
+/// are empty.
 fn drive_state(
     session: Option<Res<Session<GameConfig>>>,
     state: Res<State<ClientState>>,

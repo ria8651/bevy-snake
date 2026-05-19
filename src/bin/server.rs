@@ -414,6 +414,102 @@ mod lobby_service {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+mod signaling_proxy {
+    //! Reverse-proxies browser WebSocket upgrades on `/signaling/{room}`
+    //! through to the loopback matchbox signaling server. Lets the
+    //! deployment expose a single external port for static files + lobby
+    //! WS + signaling, instead of needing a second open port (and a second
+    //! TLS termination) for matchbox.
+    use axum::Router;
+    use axum::extract::Path;
+    use axum::extract::ws::{Message as AxumMsg, WebSocket, WebSocketUpgrade};
+    use axum::response::IntoResponse;
+    use axum::routing::get;
+    use futures_util::{SinkExt, StreamExt};
+    use log::{debug, warn};
+    use std::net::SocketAddr;
+    use tokio_tungstenite::tungstenite::Message as TungMsg;
+
+    pub fn router(upstream_addr: SocketAddr) -> Router {
+        Router::new().route(
+            "/signaling/{room}",
+            get(move |ws, path| proxy_ws(ws, path, upstream_addr)),
+        )
+    }
+
+    async fn proxy_ws(
+        ws: WebSocketUpgrade,
+        Path(room): Path<String>,
+        upstream_addr: SocketAddr,
+    ) -> impl IntoResponse {
+        ws.on_upgrade(move |client| async move {
+            let url = format!("ws://{}/{}", upstream_addr, room);
+            debug!("signaling proxy: opening upstream {}", url);
+            let (upstream, _) = match tokio_tungstenite::connect_async(&url).await {
+                Ok(pair) => pair,
+                Err(e) => {
+                    warn!("signaling proxy upstream connect failed: {}", e);
+                    return;
+                }
+            };
+            pump(client, upstream).await;
+        })
+    }
+
+    async fn pump(
+        client: WebSocket,
+        upstream: tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) {
+        let (mut client_tx, mut client_rx) = client.split();
+        let (mut up_tx, mut up_rx) = upstream.split();
+
+        let c2u = async {
+            while let Some(Ok(msg)) = client_rx.next().await {
+                let Some(out) = axum_to_tung(msg) else { break };
+                if up_tx.send(out).await.is_err() {
+                    break;
+                }
+            }
+        };
+        let u2c = async {
+            while let Some(Ok(msg)) = up_rx.next().await {
+                let Some(out) = tung_to_axum(msg) else { break };
+                if client_tx.send(out).await.is_err() {
+                    break;
+                }
+            }
+        };
+
+        tokio::select! {
+            _ = c2u => {},
+            _ = u2c => {},
+        }
+    }
+
+    fn axum_to_tung(m: AxumMsg) -> Option<TungMsg> {
+        Some(match m {
+            AxumMsg::Text(t) => TungMsg::Text(t.as_str().into()),
+            AxumMsg::Binary(b) => TungMsg::Binary(b.to_vec().into()),
+            AxumMsg::Ping(p) => TungMsg::Ping(p.to_vec().into()),
+            AxumMsg::Pong(p) => TungMsg::Pong(p.to_vec().into()),
+            AxumMsg::Close(_) => return None,
+        })
+    }
+
+    fn tung_to_axum(m: TungMsg) -> Option<AxumMsg> {
+        Some(match m {
+            TungMsg::Text(t) => AxumMsg::Text(t.as_str().to_owned().into()),
+            TungMsg::Binary(b) => AxumMsg::Binary(b.to_vec().into()),
+            TungMsg::Ping(p) => AxumMsg::Ping(p.to_vec().into()),
+            TungMsg::Pong(p) => AxumMsg::Pong(p.to_vec().into()),
+            TungMsg::Close(_) | TungMsg::Frame(_) => return None,
+        })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::main]
 async fn main() {
     use axum::Router;
@@ -429,13 +525,17 @@ async fn main() {
         .unwrap_or_else(|_| "0.0.0.0:1234".to_string())
         .parse()
         .expect("HTTP_ADDR must be a valid socket address");
+    // Default to loopback — the HTTP server proxies `/signaling/{room}` to
+    // this address, so there is no reason to expose it externally. Override
+    // with MATCHBOX_ADDR=0.0.0.0:3536 to expose it directly (skipping the
+    // proxy).
     let ws_addr: SocketAddr = env::var("MATCHBOX_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:3536".to_string())
+        .unwrap_or_else(|_| "127.0.0.1:3536".to_string())
         .parse()
         .expect("MATCHBOX_ADDR must be a valid socket address");
 
     let signaling = tokio::spawn(async move {
-        info!("matchbox signaling listening on ws://{}", ws_addr);
+        info!("matchbox signaling listening on ws://{} (proxied)", ws_addr);
         let server = SignalingServer::full_mesh_builder(ws_addr).build();
         if let Err(e) = server.serve().await {
             error!("matchbox signaling exited: {}", e);
@@ -446,6 +546,7 @@ async fn main() {
     let http = tokio::spawn(async move {
         let app: Router = Router::new()
             .merge(lobby_service::router(lobby_state))
+            .merge(signaling_proxy::router(ws_addr))
             .fallback_service(ServeDir::new("web"));
         let listener = tokio::net::TcpListener::bind(http_addr)
             .await

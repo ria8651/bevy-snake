@@ -17,8 +17,8 @@ use crate::lobby::{CurrentLobby, Role};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy_ggrs::{
-    GgrsPlugin, GgrsSchedule, LocalInputs, LocalPlayers, PlayerInputs, ReadInputs, RollbackApp,
-    RollbackFrameRate, Session, ggrs,
+    GgrsPlugin, GgrsSchedule, GgrsTime, LocalInputs, LocalPlayers, PlayerInputs, ReadInputs,
+    RollbackApp, RollbackFrameCount, RollbackFrameRate, Session, ggrs,
 };
 use bevy_matchbox::prelude::*;
 use bevy_snake::board::{Board, Direction, PlayerCount};
@@ -187,10 +187,14 @@ impl Plugin for NetPlugin {
 /// its own room, so the `?next={N}` bucketing that the old global "snake"
 /// room used is gone — the lobby Start broadcast is the readiness signal
 /// instead.
+///
+/// The default base points at the same-origin proxy path served by
+/// `src/bin/server.rs`, so a single external port covers both static files
+/// and signaling. Set `MATCHBOX_ROOM_URL` at compile time to point at a
+/// different host (e.g. `wss://example.org/signaling`).
 fn room_url(room_name: &str) -> String {
-    let base = option_env!("MATCHBOX_ROOM_URL").unwrap_or("ws://localhost:3536");
+    let base = option_env!("MATCHBOX_ROOM_URL").unwrap_or("ws://localhost:1234/signaling");
     let base = base.trim_end_matches('/');
-    let base = base.trim_end_matches("/snake");
     format!("{}/{}", base, room_name)
 }
 
@@ -212,8 +216,18 @@ fn start_session(
     mut board: ResMut<Board>,
     mut frame: ResMut<MovementFrame>,
     mut queues: ResMut<InputQueues>,
+    mut ggrs_time: ResMut<Time<GgrsTime>>,
+    mut frame_count: ResMut<RollbackFrameCount>,
     current: Res<CurrentLobby>,
 ) {
+    // bevy_ggrs zeros `RollbackFrameCount` between sessions but leaves
+    // `Time<GgrsTime>` at the prior session's elapsed value. The new session
+    // starts at frame 0 and `GgrsTimePlugin::update` would then call
+    // `advance_to(frame * 1s/fps)` with a value smaller than the leftover
+    // elapsed, tripping the "moved backwards" panic. Reset both up front.
+    *ggrs_time = Time::new_with(GgrsTime);
+    frame_count.0 = 0;
+
     if current.role == Role::Solo {
         settings.board.players = PlayerCount::One;
         *board = Board::new(settings.board);
