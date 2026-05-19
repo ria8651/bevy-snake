@@ -3,30 +3,148 @@
 
 <head>
     <meta charset="UTF-8" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Chivo:wght@400;700;900&family=Open+Sans:wght@300;400&display=swap" rel="stylesheet">
     <style>
-        body {
+        :root {
+            --textColour: rgb(231, 231, 231);
+            --mainColour: rgb(34, 34, 34);
+            --secondaryColour: rgb(83, 83, 83);
+            --tertiaryColour: rgba(255, 255, 255, 0.08);
+            --topBar: rgba(48, 48, 48, 1.0);
+            --accent: #10c2ee;
+        }
+
+        html, body {
             margin: 0;
             padding: 0;
-            height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            background-color: #191919;
-            color: white;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: var(--mainColour);
+            color: var(--textColour);
+            font-family: "Open Sans", sans-serif;
         }
 
         canvas {
+            display: block;
             width: 100%;
             height: 100%;
+            outline: none;
+        }
+
+        #loader {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            gap: 16px;
+            background-color: var(--mainColour);
+            z-index: 1;
+        }
+
+        #loader-title {
+            font-family: "Chivo", sans-serif;
+            font-size: clamp(28px, 5vw, 48px);
+            font-weight: 900;
+            letter-spacing: 0.01em;
+            color: var(--textColour);
+            margin: 0 0 8px 0;
+            padding-bottom: 0.3em;
+            border-bottom: 1px solid var(--tertiaryColour);
+            text-align: center;
+        }
+
+        #loader-bar {
+            width: min(320px, 60vw);
+            height: 8px;
+            background-color: var(--tertiaryColour);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        #loader-fill {
+            height: 100%;
+            width: 0%;
+            background-color: var(--accent);
+            transition: width 120ms linear;
+        }
+
+        #loader-text {
+            font-family: "Open Sans", sans-serif;
+            font-weight: 300;
+            font-size: 14px;
+            color: var(--secondaryColour);
+            font-variant-numeric: tabular-nums;
+        }
+
+        #loader-watermark {
+            position: absolute;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: min(150px, 20vw);
+            opacity: 0.15;
+            filter: brightness(0) invert(1);
+            pointer-events: none;
         }
     </style>
     <script type="module">
         import init from './bevy-snake.js'
-        init().catch(error => {
-            if (!error.message.startsWith("Using exceptions for control flow, don't mind me. This isn't actually an error!")) {
-                throw error;
+
+        const wasmUrl = './bevy-snake_bg.wasm'
+        const loader = document.getElementById('loader')
+        const fill = document.getElementById('loader-fill')
+        const text = document.getElementById('loader-text')
+
+        const formatMB = (bytes) => (bytes / (1024 * 1024)).toFixed(1)
+
+        async function fetchWithProgress(url) {
+            const response = await fetch(url)
+            if (!response.ok) throw new Error(`Failed to fetch ${url}: ${response.status}`)
+
+            const total = Number(response.headers.get('Content-Length')) || 0
+            if (!response.body || !total) return response
+
+            let loaded = 0
+            const reader = response.body.getReader()
+            const stream = new ReadableStream({
+                async start(controller) {
+                    while (true) {
+                        const { done, value } = await reader.read()
+                        if (done) break
+                        loaded += value.byteLength
+                        const pct = (loaded / total) * 100
+                        fill.style.width = pct + '%'
+                        text.textContent = `Loading ${formatMB(loaded)} / ${formatMB(total)} MB`
+                        controller.enqueue(value)
+                    }
+                    controller.close()
+                },
+            })
+
+            return new Response(stream, {
+                headers: response.headers,
+                status: response.status,
+                statusText: response.statusText,
+            })
+        }
+
+        try {
+            const wasmResponse = await fetchWithProgress(wasmUrl)
+            text.textContent = 'Starting…'
+            fill.style.width = '100%'
+            await init(wasmResponse)
+        } catch (error) {
+            if (!error.message?.startsWith("Using exceptions for control flow, don't mind me. This isn't actually an error!")) {
+                text.textContent = 'Failed to load: ' + error.message
+                throw error
             }
-        });
+        }
+        loader.remove()
     </script>
     <script>
         document.body.addEventListener("contextmenu", (e) => {
@@ -100,12 +218,12 @@
 </head>
 
 <body>
-    <script>
-        setInterval(function () {
-            document.getElementById('bevy').style = ''
-        }, 1000);
-    </script>
-    <h1 style="position: absolute; z-index: -1">Loading...</h1>
+    <div id="loader">
+        <img id="loader-watermark" src="./assets/images/banner-flat.svg" alt="" />
+        <h1 id="loader-title">Snake, BUT WITH GUNS!!!</h1>
+        <div id="loader-bar"><div id="loader-fill"></div></div>
+        <div id="loader-text">Loading…</div>
+    </div>
     <canvas id="bevy" style="width: 100%; height: 100%;"></canvas>
 </body>
 

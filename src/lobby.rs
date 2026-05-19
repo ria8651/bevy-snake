@@ -17,6 +17,8 @@
 //! outgoing `ClientMsg`s queued by helper methods get flushed each tick.
 
 use crate::ClientState;
+use crate::net::{ConnectStage, NetStatus};
+use crate::notice::Notice;
 use bevy::prelude::*;
 use bevy_matchbox::prelude::PeerId;
 use bevy_snake::lobby_proto::{ClientMsg, Lobby, LobbyId, LobbyState, ServerMsg};
@@ -35,6 +37,11 @@ fn lobby_ws_url() -> String {
 /// Heartbeat cadence — server times out at 10 s, so 3 s gives three
 /// in-flight chances before we get GC'd.
 const HEARTBEAT_INTERVAL_SECS: f32 = 3.0;
+
+/// Backoff between reconnect attempts when the lobby WS is unreachable.
+/// Aggressive enough that a transient server restart recovers within a few
+/// seconds; not so aggressive that a permanently-down server fills the log.
+const RECONNECT_BACKOFF_SECS: f32 = 5.0;
 
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
@@ -96,6 +103,9 @@ pub struct LobbyClient {
     /// Drained on `WsEvent::Opened` and on every successful flush.
     pending: Vec<ClientMsg>,
     heartbeat_acc: f32,
+    /// Seconds since the last reconnect attempt while disconnected.
+    /// Drives the `RECONNECT_BACKOFF_SECS` retry cadence.
+    reconnect_acc: f32,
     /// Cached most-recent local matchbox peer id, refreshed each Update
     /// from the live socket. Sent in every heartbeat once known.
     pub last_peer_id: Option<String>,
@@ -109,15 +119,22 @@ impl Default for LobbyClient {
             connected: false,
             pending: Vec::new(),
             heartbeat_acc: 0.0,
+            reconnect_acc: 0.0,
             last_peer_id: None,
         }
     }
 }
 
 impl LobbyClient {
-    fn try_connect(&mut self) {
+    /// Returns true if the connect call succeeded (we're now Connecting),
+    /// false if synchronous failure (e.g. bad URL). Doesn't tell us whether
+    /// the WS will actually reach the server — that's signaled later by
+    /// either `WsEvent::Opened` or `WsEvent::Closed` arriving on the
+    /// receiver. Surface the synchronous-failure path to the caller so it
+    /// can push a Notice.
+    fn try_connect(&mut self) -> Result<(), String> {
         if self.sender.is_some() {
-            return;
+            return Ok(());
         }
         let url = lobby_ws_url();
         match ewebsock::connect(url.clone(), Options::default()) {
@@ -126,9 +143,11 @@ impl LobbyClient {
                 self.sender = Some(sender);
                 self.receiver = Some(receiver);
                 self.connected = false;
+                Ok(())
             }
             Err(e) => {
                 warn!("lobby ws connect failed: {}", e);
+                Err(e.to_string())
             }
         }
     }
@@ -201,12 +220,44 @@ impl Plugin for LobbyPlugin {
             .init_resource::<LobbyList>()
             .init_resource::<CurrentLobby>()
             .add_systems(Startup, connect_lobby_ws)
-            .add_systems(Update, (pump_lobby_ws, heartbeat));
+            .add_systems(Update, (pump_lobby_ws, heartbeat, reconnect_tick));
     }
 }
 
-fn connect_lobby_ws(mut client: NonSendMut<LobbyClient>) {
-    client.try_connect();
+fn connect_lobby_ws(
+    mut client: NonSendMut<LobbyClient>,
+    mut status: ResMut<NetStatus>,
+    mut notice: ResMut<Notice>,
+    time: Res<Time<Real>>,
+) {
+    status.stage = ConnectStage::LobbyConnecting;
+    if let Err(e) = client.try_connect() {
+        notice.error(&time, format!("Cannot reach lobby server: {e}"));
+    }
+}
+
+/// Re-dial the lobby WS on a backoff once we know we're disconnected. The
+/// loop is gentle (5 s) so a permanently-down server doesn't spam the log;
+/// fast enough that a server restart recovers within a few seconds.
+fn reconnect_tick(
+    mut client: NonSendMut<LobbyClient>,
+    mut status: ResMut<NetStatus>,
+    mut notice: ResMut<Notice>,
+    time: Res<Time<Real>>,
+) {
+    if client.sender.is_some() {
+        client.reconnect_acc = 0.0;
+        return;
+    }
+    client.reconnect_acc += time.delta_secs();
+    if client.reconnect_acc < RECONNECT_BACKOFF_SECS {
+        return;
+    }
+    client.reconnect_acc = 0.0;
+    status.stage = ConnectStage::LobbyConnecting;
+    if let Err(e) = client.try_connect() {
+        notice.error(&time, format!("Cannot reach lobby server: {e}"));
+    }
 }
 
 /// Drains the WS receiver, dispatches messages, then flushes outbound. Also
@@ -218,6 +269,9 @@ fn pump_lobby_ws(
     mut current: ResMut<CurrentLobby>,
     mut next: ResMut<NextState<ClientState>>,
     state: Res<State<ClientState>>,
+    mut status: ResMut<NetStatus>,
+    mut notice: ResMut<Notice>,
+    time: Res<Time<Real>>,
     mut socket: Option<ResMut<bevy_matchbox::prelude::MatchboxSocket>>,
 ) {
     // Refresh known peer id from matchbox. `id()` needs `&mut self` on the
@@ -232,18 +286,41 @@ fn pump_lobby_ws(
             WsEvent::Opened => {
                 info!("lobby ws opened");
                 client.mark_opened();
+                // Don't downgrade an in-flight multiplayer status (e.g.
+                // ConnectingPeers) just because the lobby WS is happy.
+                if matches!(
+                    status.stage,
+                    ConnectStage::Idle | ConnectStage::LobbyConnecting
+                ) {
+                    status.stage = ConnectStage::LobbyConnected;
+                }
+                // Clear any "cannot reach server" notice that's now stale.
+                notice.clear_transient();
             }
             WsEvent::Closed => {
                 warn!("lobby ws closed");
+                let had_session = current.id.is_some();
                 client.mark_closed();
-                if current.id.is_some() {
+                status.stage = ConnectStage::LobbyConnecting;
+                if had_session {
+                    notice.error(&time, "Lost connection to lobby server");
                     current.clear();
                     if state.get() != &ClientState::Browsing {
                         next.set(ClientState::Browsing);
                     }
+                } else {
+                    // Browsing-time disconnect — quieter notice; the
+                    // reconnect tick will retry shortly.
+                    notice.warn(&time, "Lobby server disconnected — retrying…");
                 }
             }
-            WsEvent::Error(e) => warn!("lobby ws error: {}", e),
+            WsEvent::Error(e) => {
+                warn!("lobby ws error: {}", e);
+                // Often arrives just before `Closed` and gets superseded by
+                // the closed-handler's notice; keep it warn-level so a
+                // transient blip auto-dismisses.
+                notice.warn(&time, format!("Lobby connection error: {e}"));
+            }
             WsEvent::Message(WsMessage::Text(text)) => {
                 handle_server_text(
                     &text,
@@ -252,6 +329,8 @@ fn pump_lobby_ws(
                     &mut current,
                     &mut next,
                     state.get(),
+                    &mut notice,
+                    &time,
                 );
             }
             WsEvent::Message(_) => {}
@@ -268,6 +347,8 @@ fn handle_server_text(
     current: &mut CurrentLobby,
     next: &mut NextState<ClientState>,
     state: &ClientState,
+    notice: &mut Notice,
+    time: &Time<Real>,
 ) {
     let Ok(msg) = serde_json::from_str::<ServerMsg>(text) else {
         warn!("bad server msg: {}", text);
@@ -308,6 +389,10 @@ fn handle_server_text(
                 && !parsed.contains(&me)
             {
                 warn!("not in start roster, returning to browser");
+                notice.error(
+                    time,
+                    "Your matchbox connection wasn't ready when the host started — try again",
+                );
                 current.clear();
                 next.set(ClientState::Browsing);
                 return;
@@ -317,6 +402,7 @@ fn handle_server_text(
         }
         ServerMsg::JoinDenied { id, reason } => {
             warn!("join denied for {}: {}", id, reason);
+            notice.error(time, format!("Join denied: {reason}"));
             if current.id.as_deref() == Some(&id) {
                 current.clear();
                 if state != &ClientState::Browsing {
@@ -326,12 +412,16 @@ fn handle_server_text(
         }
         ServerMsg::Kicked { id, reason } => {
             warn!("kicked from {}: {}", id, reason);
+            notice.error(time, format!("Kicked: {reason}"));
             if current.id.as_deref() == Some(&id) {
                 current.clear();
                 next.set(ClientState::Browsing);
             }
         }
-        ServerMsg::Error { msg } => warn!("lobby server: {}", msg),
+        ServerMsg::Error { msg } => {
+            warn!("lobby server: {}", msg);
+            notice.warn(time, format!("Lobby server: {msg}"));
+        }
     }
 }
 

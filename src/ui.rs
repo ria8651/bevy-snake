@@ -1,6 +1,7 @@
 use crate::ClientState;
 use crate::lobby::{CurrentLobby, LobbyClient, LobbyList, Role};
-use crate::net::{InterpolationPhase, PendingInput};
+use crate::net::{ConnectStage, InterpolationPhase, NetStatus, PendingInput};
+use crate::notice::{Notice, NoticeLevel};
 use crate::render::{BoardImageNode, BoardRenderTarget};
 use bevy::feathers::{
     FeathersPlugins,
@@ -24,6 +25,7 @@ impl Plugin for UiPlugin {
         app.add_plugins(FeathersPlugins)
             .insert_resource(UiTheme(create_dark_theme()))
             .insert_resource(BrowserListRev(u64::MAX))
+            .add_systems(Startup, spawn_notice_banner)
             .add_systems(OnEnter(ClientState::Browsing), spawn_browser)
             .add_systems(OnExit(ClientState::Browsing), despawn::<BrowserUi>)
             .add_systems(OnEnter(ClientState::WaitingForOpponent), spawn_waiting)
@@ -35,7 +37,8 @@ impl Plugin for UiPlugin {
             .add_systems(
                 Update,
                 (
-                    (pre_check_radios, update_browser)
+                    update_notice_banner,
+                    (pre_check_radios, update_browser, update_connectivity_pill)
                         .run_if(in_state(ClientState::Browsing)),
                     update_waiting.run_if(in_state(ClientState::WaitingForOpponent)),
                     (update_scores, update_game_over_banner)
@@ -81,6 +84,25 @@ struct GameOverBanner;
 #[derive(Component)]
 struct FinishedUi;
 
+/// Subtitle text on the Finished overlay. Driven by the most-recent Notice
+/// at the moment Finished is entered, then static.
+#[derive(Component)]
+struct FinishedSubtitle;
+
+/// Always-present non-modal banner at the top of the screen. Visibility +
+/// content driven by [`Notice`]. Spawned once at startup, never despawned.
+#[derive(Component)]
+struct NoticeBanner;
+
+#[derive(Component)]
+struct NoticeBannerText;
+
+#[derive(Component)]
+struct NoticeBannerBg;
+
+#[derive(Component)]
+struct ConnectivityPill;
+
 #[derive(Component, Clone, Copy)]
 struct BoardSizeRadio(BoardSize);
 
@@ -98,6 +120,90 @@ struct BrowserListRev(u64);
 fn despawn<T: Component>(query: Query<Entity, With<T>>, mut commands: Commands) {
     for entity in &query {
         commands.entity(entity).despawn();
+    }
+}
+
+// ── Notice banner (top-of-screen, all states) ───────────────────────────
+
+fn spawn_notice_banner(mut commands: Commands) {
+    // ZIndex pushes the banner above all other state-specific UI; otherwise
+    // the Browsing root (which is z=0, position Absolute) can cover it.
+    commands
+        .spawn((
+            NoticeBanner,
+            NoticeBannerBg,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                // Toggled to Flex by update_notice_banner when a Notice is present.
+                display: Display::None,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::SpaceBetween,
+                column_gap: Val::Px(12.0),
+                padding: UiRect::axes(Val::Px(16.0), Val::Px(10.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.5, 0.0, 0.0, 0.92)),
+            ZIndex(1000),
+        ))
+        .with_children(|p| {
+            p.spawn((
+                NoticeBannerText,
+                Text::new(""),
+                TextFont {
+                    font_size: 16.0,
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+            ));
+            p.spawn((
+                button(
+                    ButtonProps::default(),
+                    (),
+                    Spawn((Text::new("Dismiss"), ThemedText)),
+                ),
+                observe(|_: On<Activate>, mut notice: ResMut<Notice>| {
+                    notice.clear();
+                }),
+            ));
+        });
+}
+
+fn update_notice_banner(
+    notice: Res<Notice>,
+    mut banner_q: Query<(&mut Node, &mut BackgroundColor), With<NoticeBanner>>,
+    mut text_q: Query<&mut Text, With<NoticeBannerText>>,
+) {
+    let Ok((mut node, mut bg)) = banner_q.single_mut() else {
+        return;
+    };
+    let Ok(mut text) = text_q.single_mut() else {
+        return;
+    };
+    match notice.0.as_ref() {
+        Some(entry) => {
+            if node.display != Display::Flex {
+                node.display = Display::Flex;
+            }
+            let color = match entry.level {
+                NoticeLevel::Error => Color::srgba(0.55, 0.10, 0.10, 0.95),
+                NoticeLevel::Warn => Color::srgba(0.55, 0.40, 0.05, 0.95),
+            };
+            if bg.0 != color {
+                bg.0 = color;
+            }
+            if text.0 != entry.message {
+                text.0 = entry.message.clone();
+            }
+        }
+        None => {
+            if node.display != Display::None {
+                node.display = Display::None;
+            }
+        }
     }
 }
 
@@ -144,6 +250,17 @@ fn spawn_browser(mut commands: Commands, mut rev: ResMut<BrowserListRev>) {
                         font_size: 28.0,
                         ..default()
                     },
+                ),
+                // Lobby-WS connectivity indicator. Status text + color
+                // driven by `update_connectivity_pill`.
+                (
+                    ConnectivityPill,
+                    Text::new("○ Connecting to lobby server…"),
+                    TextFont {
+                        font_size: 14.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgba(1.0, 1.0, 1.0, 0.6)),
                 ),
                 // The same settings groups the Creating page used to host;
                 // they mutate the live GameSettings resource, which both
@@ -297,6 +414,34 @@ fn update_browser(
             );
             p.spawn(btn);
         });
+    }
+}
+
+fn update_connectivity_pill(
+    status: Res<NetStatus>,
+    mut q: Query<(&mut Text, &mut TextColor), With<ConnectivityPill>>,
+) {
+    let Ok((mut text, mut color)) = q.single_mut() else {
+        return;
+    };
+    let (msg, c) = match status.stage {
+        ConnectStage::LobbyConnected => (
+            "● Connected to lobby server",
+            Color::srgba(0.4, 0.8, 0.4, 0.85),
+        ),
+        ConnectStage::LobbyConnecting => (
+            "○ Connecting to lobby server…",
+            Color::srgba(1.0, 1.0, 1.0, 0.6),
+        ),
+        // While in Browsing the netcode stages shouldn't appear, but if
+        // they do (e.g. mid-bounce) treat them as "not ready to host".
+        _ => ("× Lobby server unreachable", Color::srgba(0.9, 0.4, 0.4, 0.9)),
+    };
+    if text.0 != msg {
+        text.0 = msg.into();
+    }
+    if color.0 != c {
+        color.0 = c;
     }
 }
 
@@ -626,6 +771,7 @@ fn spawn_waiting(mut commands: Commands, current: Res<CurrentLobby>) {
 fn update_waiting(
     current: Res<CurrentLobby>,
     list: Res<LobbyList>,
+    status: Res<NetStatus>,
     mut count_text: Query<
         &mut Text,
         (With<PlayerCountText>, Without<WaitingText>, Without<StartButtonLabel>),
@@ -658,15 +804,26 @@ fn update_waiting(
         t.0 = format!("{}/{} players", count, MAX_PLAYERS);
     }
     if let Ok(mut t) = status_text.single_mut() {
-        t.0 = match current.role {
-            Role::Host => {
+        // Two layered facts: the netcode-stage status (precise — opening
+        // matchbox / syncing / ...) and the role-based message (host vs
+        // joiner). When the stage is AwaitingRoster the role-based
+        // message is more useful; otherwise the stage detail wins.
+        t.0 = match (&status.stage, current.role) {
+            (ConnectStage::OpeningMatchbox, _) => "Opening WebRTC connection…".into(),
+            (ConnectStage::ConnectingPeers { ready, total }, _) => {
+                format!("Connecting to peers ({ready}/{total})…")
+            }
+            (ConnectStage::SynchronizingGgrs { count, total }, _) => {
+                format!("Synchronizing ({count}/{total})…")
+            }
+            (ConnectStage::AwaitingRoster | ConnectStage::Playing | _, Role::Host) => {
                 if count < 2 {
                     "Hosting — waiting for someone to join".into()
                 } else {
                     "Hosting — click Start when ready".into()
                 }
             }
-            Role::Joiner => "Waiting for host to start…".into(),
+            (_, Role::Joiner) => "Waiting for host to start…".into(),
             _ => "Connecting…".into(),
         };
     }
@@ -931,7 +1088,16 @@ fn leave_to_browser(
 /// banner handles the visual). So the only useful action here is going
 /// back to the lobby browser; restart isn't possible because the session
 /// is gone.
-fn spawn_finished(mut commands: Commands) {
+fn spawn_finished(mut commands: Commands, notice: Res<Notice>) {
+    // Capture the disconnect reason from Notice at entry — it's the
+    // most-recent error and almost always describes *why* we ended up
+    // here (peer disconnect, channel closed, etc.). Snapshot rather than
+    // poll, because the user may dismiss the banner.
+    let subtitle = notice
+        .0
+        .as_ref()
+        .filter(|n| matches!(n.level, NoticeLevel::Error))
+        .map(|n| n.message.clone());
     commands
         .spawn((
             FinishedUi,
@@ -962,6 +1128,17 @@ fn spawn_finished(mut commands: Commands) {
                     },
                     TextColor(Color::WHITE),
                 ));
+                if let Some(sub) = subtitle {
+                    p.spawn((
+                        FinishedSubtitle,
+                        Text::new(sub),
+                        TextFont {
+                            font_size: 16.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgba(1.0, 0.7, 0.7, 0.85)),
+                    ));
+                }
                 p.spawn((
                     button(
                         ButtonProps {

@@ -14,15 +14,18 @@
 
 use crate::ClientState;
 use crate::lobby::{CurrentLobby, Role};
+use crate::notice::Notice;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy_ggrs::{
     GgrsPlugin, GgrsSchedule, GgrsTime, LocalInputs, LocalPlayers, PlayerInputs, ReadInputs,
     RollbackApp, RollbackFrameCount, RollbackFrameRate, Session, ggrs,
 };
+use bevy_matchbox::matchbox_socket::ChannelError;
 use bevy_matchbox::prelude::*;
 use bevy_snake::board::{Board, Direction, PlayerCount};
 use bevy_snake::settings::GameSettings;
+use ggrs::GgrsEvent;
 use rand::{rngs::StdRng, SeedableRng};
 
 /// GGRS config: each player sends a `u8`-packed input, addressed by matchbox
@@ -153,6 +156,52 @@ impl Default for InterpolationPhase {
     }
 }
 
+/// High-level "where are we in the connection lifecycle" state. UI reads
+/// this to render a precise subtitle in the waiting overlay and a
+/// connectivity pill on the Browsing screen. Independent of [`ClientState`]
+/// — the state machine flips on user actions and session presence; this
+/// resource is updated by the netcode plumbing as each phase resolves.
+#[derive(Resource, Default, Debug, Clone, PartialEq, Eq)]
+pub struct NetStatus {
+    pub stage: ConnectStage,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+pub enum ConnectStage {
+    /// No active networking — Browsing without a successful lobby WS yet.
+    #[default]
+    Idle,
+    /// Lobby WebSocket dialed but not yet `Opened`.
+    LobbyConnecting,
+    /// Lobby WebSocket healthy, idling on the main menu.
+    LobbyConnected,
+    /// `MatchboxSocket` resource present, signaling channel not yet ready.
+    OpeningMatchbox,
+    /// WebRTC channel ready, but the host hasn't broadcast the Start roster
+    /// yet. This phase can legitimately last as long as the host wants.
+    AwaitingRoster,
+    /// Post-Start: WebRTC peer connections being established.
+    ConnectingPeers { ready: usize, total: usize },
+    /// GGRS handshake in progress on top of the WebRTC channel.
+    SynchronizingGgrs { count: u32, total: u32 },
+    /// All synchronized, simulation running.
+    Playing,
+}
+
+/// Tracks how long we've been in the "Start broadcast received, waiting for
+/// WebRTC peer connections to finalize" phase. If this exceeds
+/// [`PEER_CONNECT_TIMEOUT_SECS`], surface a fatal Notice and bounce.
+/// Reset to None whenever no session is being built.
+#[derive(Resource, Default)]
+pub struct WaitForPeersDeadline {
+    pub started_at: Option<f64>,
+}
+
+/// Hard cap on how long we'll sit waiting for WebRTC handshakes after the
+/// Start roster arrives. Matches the order-of-magnitude of a slow TURN
+/// negotiation; on faster networks all peers connect in <2 s.
+pub const PEER_CONNECT_TIMEOUT_SECS: f64 = 15.0;
+
 pub struct NetPlugin;
 
 impl Plugin for NetPlugin {
@@ -172,9 +221,16 @@ impl Plugin for NetPlugin {
             .insert_resource(PendingInput::default())
             .insert_resource(InterpolationPhase::default())
             .insert_resource(default_settings)
+            .init_resource::<NetStatus>()
+            .init_resource::<WaitForPeersDeadline>()
             .add_systems(OnEnter(ClientState::WaitingForOpponent), start_session)
             .add_systems(OnExit(ClientState::Playing), teardown_session)
-            .add_systems(Update, (wait_for_players, buffer_local_input))
+            .add_systems(OnEnter(ClientState::Playing), mark_playing_stage)
+            .add_systems(OnEnter(ClientState::Browsing), reset_to_browsing_stage)
+            .add_systems(
+                Update,
+                (wait_for_players, drain_ggrs_events, buffer_local_input),
+            )
             .add_systems(ReadInputs, read_local_input)
             .add_systems(
                 GgrsSchedule,
@@ -218,8 +274,13 @@ fn start_session(
     mut queues: ResMut<InputQueues>,
     mut ggrs_time: ResMut<Time<GgrsTime>>,
     mut frame_count: ResMut<RollbackFrameCount>,
+    mut status: ResMut<NetStatus>,
+    mut deadline: ResMut<WaitForPeersDeadline>,
     current: Res<CurrentLobby>,
 ) {
+    // Fresh attempt — wipe any prior timeout state.
+    deadline.started_at = None;
+
     // bevy_ggrs zeros `RollbackFrameCount` between sessions but leaves
     // `Time<GgrsTime>` at the prior session's elapsed value. The new session
     // starts at frame 0 and `GgrsTimePlugin::update` would then call
@@ -247,6 +308,7 @@ fn start_session(
         info!("solo session, seed: {:x}", seed);
         commands.insert_resource(RngState { seed });
         commands.insert_resource(Session::SyncTest(session));
+        status.stage = ConnectStage::Playing;
         return;
     }
 
@@ -254,6 +316,7 @@ fn start_session(
         warn!("start_session entered without a lobby room name");
         return;
     };
+    status.stage = ConnectStage::OpeningMatchbox;
     // Player count is unknown until the Start roster arrives; reset board
     // to a single-player placeholder for now. `wait_for_players` rebuilds
     // it with the real count once the roster comes in.
@@ -278,9 +341,114 @@ fn solo_seed() -> u64 {
 /// Removes session and matchbox socket on exiting Playing — currently only
 /// fires when the session itself is removed elsewhere. Keeps things tidy in
 /// case the user later adds a "back to lobby" flow.
-fn teardown_session(mut commands: Commands) {
+fn teardown_session(
+    mut commands: Commands,
+    mut deadline: ResMut<WaitForPeersDeadline>,
+) {
     commands.remove_resource::<Session<GameConfig>>();
     commands.remove_resource::<MatchboxSocket>();
+    deadline.started_at = None;
+}
+
+fn mark_playing_stage(mut status: ResMut<NetStatus>) {
+    status.stage = ConnectStage::Playing;
+}
+
+/// Re-entering the Browsing screen resets connection status to a clean
+/// idle / "lobby connected" — whichever applies. The actual value is set
+/// by the lobby plugin once it observes its WS state.
+fn reset_to_browsing_stage(mut status: ResMut<NetStatus>) {
+    // Leave whatever the lobby plugin has set; this default catches the
+    // case where the lobby WS is fine and we just bounced from a failed
+    // multiplayer attempt.
+    if !matches!(
+        status.stage,
+        ConnectStage::LobbyConnected | ConnectStage::LobbyConnecting | ConnectStage::Idle
+    ) {
+        status.stage = ConnectStage::LobbyConnected;
+    }
+}
+
+/// Tear down a failed multiplayer attempt and return to the lobby browser.
+/// The triggering system is expected to have already populated [`Notice`]
+/// with the user-visible reason.
+fn abort_to_browser(
+    commands: &mut Commands,
+    current: &mut CurrentLobby,
+    next_state: &mut NextState<ClientState>,
+    status: &mut NetStatus,
+    deadline: &mut WaitForPeersDeadline,
+) {
+    commands.remove_resource::<MatchboxSocket>();
+    commands.remove_resource::<Session<GameConfig>>();
+    current.clear();
+    deadline.started_at = None;
+    status.stage = ConnectStage::LobbyConnected;
+    next_state.set(ClientState::Browsing);
+}
+
+/// Drain runtime events from the GGRS session: synchronization progress,
+/// network blips, peer disconnect, desync detection. Everything either
+/// updates [`NetStatus`] (visible in the waiting overlay subtitle) or
+/// pushes a [`Notice`] (visible in the top-of-screen banner). Runs every
+/// `Update`; no-op when no P2P session is present.
+fn drain_ggrs_events(
+    mut commands: Commands,
+    session: Option<ResMut<Session<GameConfig>>>,
+    mut status: ResMut<NetStatus>,
+    mut notice: ResMut<Notice>,
+    time: Res<Time<Real>>,
+) {
+    let Some(mut session) = session else { return };
+    let events: Vec<GgrsEvent<GameConfig>> = match &mut *session {
+        Session::P2P(s) => s.events().collect(),
+        _ => return,
+    };
+    let mut end_session = false;
+    for ev in events {
+        match ev {
+            GgrsEvent::Synchronizing { count, total, .. } => {
+                status.stage = ConnectStage::SynchronizingGgrs { count, total };
+            }
+            GgrsEvent::Synchronized { .. } => {
+                // Stage transitions to Playing on ClientState::Playing
+                // entry (`mark_playing_stage`); nothing to do here.
+            }
+            GgrsEvent::NetworkInterrupted {
+                addr,
+                disconnect_timeout,
+            } => {
+                let secs = (disconnect_timeout as f64 / 1000.0).round() as u64;
+                notice.warn(
+                    &time,
+                    format!("Connection unstable with peer {addr} — disconnecting in {secs}s if not recovered"),
+                );
+            }
+            GgrsEvent::NetworkResumed { addr } => {
+                info!("network resumed with {}", addr);
+                notice.clear_transient();
+            }
+            GgrsEvent::Disconnected { addr } => {
+                // GGRS keeps the session alive after a peer drops — local
+                // sim would otherwise continue indefinitely with phantom
+                // input from the gone peer. End the round so the existing
+                // session-gone → Finished route in `drive_state` fires and
+                // shows the disconnect reason as the Finished subtitle.
+                warn!("peer disconnected: {}", addr);
+                notice.error(&time, format!("Peer disconnected: {addr}"));
+                end_session = true;
+            }
+            GgrsEvent::DesyncDetected { frame, .. } => {
+                warn!("desync at frame {}", frame);
+                notice.warn(&time, format!("Desync detected at frame {frame}"));
+            }
+            GgrsEvent::WaitRecommendation { .. } => {}
+        }
+    }
+    if end_session {
+        commands.remove_resource::<Session<GameConfig>>();
+        commands.remove_resource::<MatchboxSocket>();
+    }
 }
 
 fn wait_for_players(
@@ -290,7 +458,12 @@ fn wait_for_players(
     mut settings: ResMut<GameSettings>,
     mut board: ResMut<Board>,
     mut queues: ResMut<InputQueues>,
-    current: Res<CurrentLobby>,
+    mut status: ResMut<NetStatus>,
+    mut notice: ResMut<Notice>,
+    mut deadline: ResMut<WaitForPeersDeadline>,
+    mut current: ResMut<CurrentLobby>,
+    mut next_state: ResMut<NextState<ClientState>>,
+    time: Res<Time<Real>>,
 ) {
     if session.is_some() {
         return;
@@ -299,29 +472,75 @@ fn wait_for_players(
         return;
     };
     if socket.get_channel(0).is_err() {
+        status.stage = ConnectStage::OpeningMatchbox;
         return;
     }
+    // Drain peer state changes — this is where we'd learn about the
+    // signaling WS being unreachable (e.g. WebRTC blocked because the page
+    // isn't on a secure origin). `Closed` is matchbox's way of saying the
+    // underlying socket future ended; the user can't do anything but bail.
+    if let Err(e) = socket.try_update_peers() {
+        let msg = match e {
+            ChannelError::Closed => "WebRTC connection failed — this site usually needs HTTPS for multiplayer".to_string(),
+            other => format!("WebRTC channel error: {other}"),
+        };
+        warn!("matchbox: {}", msg);
+        notice.error(&time, msg);
+        abort_to_browser(
+            &mut commands,
+            &mut current,
+            &mut next_state,
+            &mut status,
+            &mut deadline,
+        );
+        return;
+    }
+
     // Server-broadcast roster gates session build. Until it arrives, we
-    // sit on the matchbox connection and let the user wait.
+    // sit on the matchbox connection and let the user wait. No timeout
+    // here — the host might just be slow to click Start.
     let Some(roster) = current.start_roster.as_ref() else {
+        status.stage = ConnectStage::AwaitingRoster;
+        deadline.started_at = None;
         return;
     };
 
-    let _ = socket.try_update_peers();
     let my_id = socket.id();
     let connected: std::collections::HashSet<PeerId> = socket.connected_peers().collect();
-    // Every roster member must either be us or a peer we've finished the
-    // WebRTC dance with. Otherwise wait.
-    for p in roster {
-        if Some(*p) == my_id {
-            continue;
-        }
-        if !connected.contains(p) {
-            return;
-        }
-    }
+    let total = roster.len();
+    let ready = roster
+        .iter()
+        .filter(|p| Some(**p) == my_id || connected.contains(*p))
+        .count();
+    status.stage = ConnectStage::ConnectingPeers { ready, total };
 
-    let n = roster.len();
+    // Every roster member must either be us or a peer we've finished the
+    // WebRTC dance with. Otherwise wait — but enforce a deadline so a
+    // permanently-blocked WebRTC dance doesn't hang the UI forever.
+    if ready < total {
+        let now = time.elapsed_secs_f64();
+        let started = *deadline.started_at.get_or_insert(now);
+        if now - started > PEER_CONNECT_TIMEOUT_SECS {
+            warn!("peer connect timeout after {:.0}s ({}/{} ready)",
+                  PEER_CONNECT_TIMEOUT_SECS, ready, total);
+            notice.error(
+                &time,
+                "Peers never connected — WebRTC may be blocked by your network or require HTTPS",
+            );
+            abort_to_browser(
+                &mut commands,
+                &mut current,
+                &mut next_state,
+                &mut status,
+                &mut deadline,
+            );
+        }
+        return;
+    }
+    // All roster members connected — clear the timeout window.
+    deadline.started_at = None;
+
+    let n = total;
     info!("building GGRS session with {} players", n);
 
     // The board was constructed with PlayerCount::One in start_session;

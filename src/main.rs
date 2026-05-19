@@ -5,7 +5,9 @@ use net::GameConfig;
 
 mod lobby;
 mod net;
+mod notice;
 mod render;
+mod text_font;
 mod ui;
 
 #[derive(States, Default, Debug, Hash, PartialEq, Eq, Clone)]
@@ -34,11 +36,14 @@ fn main() {
                 primary_window: Some(Window {
                     title: "Snake, WITH GUNS!".to_string(),
                     canvas: Some("#bevy".to_string()),
+                    fit_canvas_to_parent: true,
                     prevent_default_event_handling: false,
                     ..default()
                 }),
                 ..default()
             }),
+            text_font::DefaultFontPlugin,
+            notice::NoticePlugin,
             lobby::LobbyPlugin,
             net::NetPlugin,
             render::BoardRenderPlugin,
