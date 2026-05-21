@@ -503,7 +503,6 @@ fn main() {
     // Run the Bevy + Lightyear game server.
     bevy::app::App::new()
         .add_plugins(bevy::MinimalPlugins)
-        .add_plugins(bevy::log::LogPlugin::default())
         .add_plugins(game_server::GameServerPlugin {
             bind: game_addr,
         })

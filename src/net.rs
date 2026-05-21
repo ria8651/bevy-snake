@@ -27,10 +27,10 @@ use bevy_snake::net_proto::{
     Welcome,
 };
 use bevy_snake::settings::GameSettings;
-use lightyear::netcode::{Authentication, NetcodeClient};
 use lightyear::prelude::*;
 use lightyear::prelude::client::*;
 use lightyear::websocket::client::{WebSocketClientIo, WebSocketTarget};
+use lightyear::websocket::prelude::client::ClientConfig as WsClientConfig;
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -269,13 +269,23 @@ fn open_session(
         protocol_id: creds.protocol_id,
     };
     let target = WebSocketTarget::Url(endpoint);
+    // Dev: don't validate certs on the WebSocket TLS handshake — the
+    // server's self-signed cert wouldn't validate against any root CA.
+    let ws_config = WsClientConfig::builder().with_no_cert_validation();
 
+    let netcode = match NetcodeClient::new(auth, NetcodeConfig::default()) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("NetcodeClient::new failed: {:?}", e);
+            return;
+        }
+    };
     let entity = commands
         .spawn((
             Client::default(),
             Link::new(None),
-            NetcodeClient::new(auth, default()),
-            WebSocketClientIo { target },
+            netcode,
+            WebSocketClientIo { config: ws_config, target },
             GameClient,
             Name::from("GameClient"),
         ))

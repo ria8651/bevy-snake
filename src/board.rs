@@ -4,6 +4,7 @@ use bevy::{
     platform::collections::{HashMap, HashSet},
     prelude::*,
 };
+use log::error;
 use rand::{seq::IteratorRandom, Rng};
 use serde::{Deserialize, Serialize};
 use std::ops::{Index, IndexMut};

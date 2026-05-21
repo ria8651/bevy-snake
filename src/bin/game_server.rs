@@ -13,10 +13,10 @@ use bevy_snake::net_proto::{
     UnreliableChannel, Welcome,
 };
 use bevy_snake::settings::GameSettings;
-use lightyear::netcode::NetcodeServer;
 use lightyear::prelude::*;
 use lightyear::prelude::server::*;
 use lightyear::websocket::server::{Identity, WebSocketServerIo};
+use lightyear::websocket::prelude::server::ServerConfig;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::collections::HashMap;
@@ -46,7 +46,8 @@ impl Plugin for GameServerPlugin {
         .insert_resource(SessionState::default())
         .insert_resource(BindAddr(self.bind))
         .add_systems(Startup, start_server)
-        .add_systems(Update, (handle_new_client, handle_connected))
+        .add_observer(handle_new_client)
+        .add_observer(handle_connected)
         .add_systems(Update, (receive_inputs, receive_join_next, receive_start))
         .add_systems(FixedUpdate, tick_world);
     }
@@ -83,9 +84,9 @@ fn start_server(
     bind: Res<BindAddr>,
     mut session: ResMut<SessionState>,
 ) {
-    let sans = vec!["localhost".into(), "127.0.0.1".into()];
+    let sans: Vec<String> = vec!["localhost".to_string(), "127.0.0.1".to_string()];
     let identity = Identity::self_signed(sans).expect("self_signed");
-    let cfg = aeronet_websocket::server::ServerConfig::builder()
+    let cfg = ServerConfig::builder()
         .with_bind_address(bind.0)
         .with_identity(identity);
 
@@ -311,11 +312,11 @@ fn tick_world(
     mut session: ResMut<SessionState>,
     mut senders: Query<(&RemoteId, &mut MessageSender<TickConfirmed>), With<ClientOf>>,
 ) {
-    let Some(board) = session.board.as_mut() else {
+    if session.board.is_none() {
         return;
-    };
-    session.frame_counter = session.frame_counter.wrapping_add(1);
+    }
     let fpm = session.settings.speed.frames_per_movement();
+    session.frame_counter = session.frame_counter.wrapping_add(1);
     if session.frame_counter % fpm != 0 {
         return;
     }
@@ -323,14 +324,21 @@ fn tick_world(
         return;
     }
 
+    // Snapshot all the immutable state we need.
     let n = session.players.len();
     let mut inputs: Vec<Option<Direction>> = vec![None; n];
-    for (id, slot) in session.players.iter_mut() {
+    for (id, slot) in session.players.iter() {
         if (*id as usize) < n {
             inputs[*id as usize] = slot.latest_input;
         }
     }
+    let seed = session
+        .rng_seed
+        .wrapping_add(session.tick as u64)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15);
 
+    // Now take a single mutable borrow of board.
+    let board = session.board.as_mut().unwrap();
     let outcome = match board.tick_movement(&inputs) {
         Ok(o) => o,
         Err(e) => {
@@ -338,10 +346,6 @@ fn tick_world(
             return;
         }
     };
-    let seed = session
-        .rng_seed
-        .wrapping_add(session.tick as u64)
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15);
     let mut rng = StdRng::seed_from_u64(seed);
     let spawns = board.pick_spawns(&outcome, &mut rng);
 
@@ -355,8 +359,6 @@ fn tick_world(
     for (_, mut sender) in senders.iter_mut() {
         let _ = sender.send::<UnreliableChannel>(confirmed.clone());
     }
-    // discard reference to outcome
-    let _ = outcome.apples_to_spawn;
 }
 
 fn tick_hz(settings: &GameSettings) -> f64 {

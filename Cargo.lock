@@ -676,6 +676,7 @@ dependencies = [
  "bevy",
  "colog",
  "ewebsock",
+ "futures-util",
  "getrandom 0.3.2",
  "lightyear",
  "log",

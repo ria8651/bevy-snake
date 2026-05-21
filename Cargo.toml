@@ -7,6 +7,7 @@ default-run = "bevy-snake"
 
 [dependencies]
 bevy = { version = "0.18", default-features = false, features = [
+    "bevy_log",
     "bevy_asset",
     "bevy_state",
     "bevy_scene",
