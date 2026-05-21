@@ -127,20 +127,18 @@ impl Board {
         pos.x >= 0 && pos.y >= 0 && pos.x < self.width as i32 && pos.y < self.height as i32
     }
 
-    pub fn spawn_apple(&mut self, rng: &mut impl Rng) -> Result<(), ()> {
+    pub fn spawn_apple(&mut self, rng: &mut impl Rng) -> Option<IVec2> {
         let empty = self
             .cells
             .iter()
             .enumerate()
             .filter(|(_, cell)| matches!(cell, Cell::Empty))
-            .choose(rng);
-
-        if let Some((i, _)) = empty {
-            self.cells[i] = Cell::Apple { natural: true };
-            Ok(())
-        } else {
-            Err(())
-        }
+            .choose(rng)?;
+        let (i, _) = empty;
+        self.cells[i] = Cell::Apple { natural: true };
+        let x = i % self.width;
+        let y = i / self.width;
+        Some(IVec2::new(x as i32, y as i32))
     }
 
     pub fn get_spawnable(&self) -> Vec<IVec2> {
@@ -247,22 +245,22 @@ impl Board {
         spawnable
     }
 
-    pub fn spawn_wall(&mut self, rng: &mut impl Rng) -> Result<(), ()> {
+    pub fn spawn_wall(&mut self, rng: &mut impl Rng) -> Option<IVec2> {
         let spawnable = self.get_spawnable();
-        let pos = spawnable.into_iter().choose(rng).ok_or(())?;
+        let pos = spawnable.into_iter().choose(rng)?;
         self[pos] = Cell::Wall;
-        Ok(())
+        Some(pos)
     }
 
     /// Run one tick of the deterministic simulation: snake movement,
-    /// collisions, growth, damage, game-over detection, and apple/wall
-    /// spawning. Every peer runs this with an identical RNG so the result is
-    /// identical across peers — that's the GGRS rollback contract.
-    pub fn tick(
+    /// collisions, growth, damage, game-over detection. No RNG — spawn
+    /// placement is deferred to `pick_spawns` (server) or `apply_spawns`
+    /// (client). Returns how many apples need spawning so the caller can
+    /// supply or receive the positions.
+    pub fn tick_movement(
         &mut self,
         inputs: &[Option<Direction>],
-        rng: &mut impl Rng,
-    ) -> Result<Vec<BoardEvent>, BoardError> {
+    ) -> Result<TickOutcome, BoardError> {
         let mut board_events = Vec::new();
         let mut heads = HashMap::new();
         let mut grow = HashSet::new();
@@ -369,17 +367,65 @@ impl Board {
             board_events.push(BoardEvent::GameOver);
         }
 
-        // spawn replacement apples / walls
-        for _ in 0..spawn_apples {
-            self.spawn_apple(rng).ok();
-            self.apples_eaten += 1;
+        Ok(TickOutcome {
+            events: board_events,
+            apples_to_spawn: spawn_apples,
+        })
+    }
 
+    /// Server-side spawn placement. Picks positions via RNG, mutates the
+    /// board to place apples/walls, and returns the chosen positions so the
+    /// server can broadcast them to clients.
+    pub fn pick_spawns(
+        &mut self,
+        outcome: &TickOutcome,
+        rng: &mut impl Rng,
+    ) -> SpawnPositions {
+        let mut apples = Vec::new();
+        let mut walls = Vec::new();
+        for _ in 0..outcome.apples_to_spawn {
+            if let Some(pos) = self.spawn_apple(rng) {
+                apples.push(pos);
+            }
+            self.apples_eaten += 1;
             if self.apples_eaten % 2 == 1 {
-                self.spawn_wall(rng).ok();
+                if let Some(pos) = self.spawn_wall(rng) {
+                    walls.push(pos);
+                }
             }
         }
+        SpawnPositions { apples, walls }
+    }
 
-        Ok(board_events)
+    /// Client-side spawn placement. Applies positions received from the
+    /// server. Walls and apples are placed at the given cells; `apples_eaten`
+    /// is incremented by `outcome.apples_to_spawn` to keep the deterministic
+    /// wall-cadence invariant in sync.
+    pub fn apply_spawns(&mut self, outcome: &TickOutcome, spawns: &SpawnPositions) {
+        for &pos in &spawns.apples {
+            if self.in_bounds(pos) {
+                self[pos] = Cell::Apple { natural: true };
+            }
+        }
+        for &pos in &spawns.walls {
+            if self.in_bounds(pos) {
+                self[pos] = Cell::Wall;
+            }
+        }
+        self.apples_eaten += outcome.apples_to_spawn;
+    }
+
+    /// Convenience: full tick using a local RNG (used by tests and any
+    /// single-process driver). Server uses `tick_movement` + `pick_spawns`
+    /// explicitly so it can broadcast the positions.
+    pub fn tick(
+        &mut self,
+        inputs: &[Option<Direction>],
+        rng: &mut impl Rng,
+    ) -> Result<Vec<BoardEvent>, BoardError> {
+        let outcome = self.tick_movement(inputs)?;
+        self.pick_spawns(&outcome, rng);
+        Ok(outcome.events)
     }
 
     pub fn cells(&self) -> impl Iterator<Item = (IVec2, Cell)> + '_ {
@@ -584,6 +630,24 @@ impl Default for BoardSettings {
             players: PlayerCount::Two,
         }
     }
+}
+
+/// Result of `tick_movement` — the deterministic, RNG-free portion of a
+/// tick. The caller picks (server) or applies (client) the spawn positions.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TickOutcome {
+    pub events: Vec<BoardEvent>,
+    /// Number of natural apples eaten this tick. Each one triggers a
+    /// replacement apple spawn; every other one also spawns a wall (the
+    /// existing odd-apples_eaten rule).
+    pub apples_to_spawn: usize,
+}
+
+/// Spawn positions chosen by the server, broadcast to clients verbatim.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpawnPositions {
+    pub apples: Vec<IVec2>,
+    pub walls: Vec<IVec2>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
