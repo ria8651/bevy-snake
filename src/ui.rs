@@ -406,7 +406,6 @@ fn update_browser(
                         client.join_lobby(id.clone());
                         current.clear();
                         current.id = Some(id.clone());
-                        current.room_name = Some(format!("lobby-{}", id));
                         current.role = Role::Joiner;
                         next.set(ClientState::WaitingForOpponent);
                     },
@@ -464,7 +463,7 @@ fn speed_label(s: Speed) -> &'static str {
 fn state_label(s: LobbyState) -> &'static str {
     match s {
         LobbyState::Waiting => "Waiting",
-        LobbyState::Playing => "Playing",
+        LobbyState::InProgress => "In progress",
         LobbyState::Finished => "Finished",
     }
 }
@@ -809,14 +808,9 @@ fn update_waiting(
         // joiner). When the stage is AwaitingRoster the role-based
         // message is more useful; otherwise the stage detail wins.
         t.0 = match (&status.stage, current.role) {
-            (ConnectStage::OpeningMatchbox, _) => "Opening WebRTC connection…".into(),
-            (ConnectStage::ConnectingPeers { ready, total }, _) => {
-                format!("Connecting to peers ({ready}/{total})…")
-            }
-            (ConnectStage::SynchronizingGgrs { count, total }, _) => {
-                format!("Synchronizing ({count}/{total})…")
-            }
-            (ConnectStage::AwaitingRoster | ConnectStage::Playing | _, Role::Host) => {
+            (ConnectStage::ConnectingToGameServer, _) => "Connecting to game server…".into(),
+            (ConnectStage::AwaitingWelcome, _) => "Synchronizing…".into(),
+            (_, Role::Host) => {
                 if count < 2 {
                     "Hosting — waiting for someone to join".into()
                 } else {

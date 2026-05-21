@@ -1,19 +1,19 @@
-//! HTTP static-file server + matchbox signaling server + lobby WS service.
+//! Authoritative game server + lobby + static-file host.
 //!
-//! Three things bound at the same time:
-//!   - HTTP on `HTTP_ADDR` (default 1234) serves `web/` and hosts the
-//!     `/lobbies` WebSocket below.
-//!   - Matchbox signaling on `MATCHBOX_ADDR` (default 3536) — untouched
-//!     full-mesh handshake server.
-//!   - Lobby WS on `/lobbies` — in-memory directory of open lobbies.
-//!     Clients connect to discover and join lobbies; the host eventually
-//!     calls Start, and the server broadcasts the agreed peer roster so all
-//!     clients build the same GGRS session.
+//! Architecture:
+//!   - **Bevy app** (main thread) hosts the Lightyear `ServerPlugins` and
+//!     runs the authoritative `Board::tick_movement` per movement tick.
+//!   - **Tokio task** runs the axum HTTP server on `HTTP_ADDR` (default
+//!     1234): serves `web/` static files + `/lobbies` WebSocket lobby
+//!     discovery.
+//!   - **Lightyear WebSocket server** listens on `GAME_ADDR` (default
+//!     1235). When the lobby's host hits Start, the lobby task issues each
+//!     member a `GameSessionReady` message with a unique netcode `client_id`
+//!     + shared `private_key` + `endpoint`. Members open a Lightyear
+//!     connection to that endpoint.
 //!
-//! The lobby service is intentionally tiny: no auth, in-memory state, GC by
-//! heartbeat. A lobby's id doubles as its matchbox room name
-//! (`lobby-{id}`), so once Start fires the clients already know where to
-//! point matchbox.
+//! For now there is a single global game session; supporting multiple
+//! concurrent lobbies is a follow-up (would key on `protocol_id` per lobby).
 
 #[cfg(not(target_arch = "wasm32"))]
 mod lobby_service {
@@ -25,55 +25,60 @@ mod lobby_service {
     use axum::response::IntoResponse;
     use axum::routing::get;
     use bevy_snake::lobby_proto::{
-        ClientMsg, Lobby, LobbyId, LobbyState, MAX_PLAYERS, ServerMsg,
+        ClientMsg, GameSessionCreds, Lobby, LobbyId, LobbyState, MAX_PLAYERS, ServerMsg,
     };
-    use futures_util::{SinkExt, StreamExt};
+    use bevy_snake::net_proto::PROTOCOL_ID;
     use log::{debug, info, warn};
+    use rand::RngCore;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
     use tokio::sync::{RwLock, broadcast, mpsc};
 
-    /// Per-connection identifier. Incremented atomically; doesn't survive
-    /// restart, which is fine — state is in-memory anyway.
     pub type ConnId = u64;
 
-    /// Heartbeat must arrive at least this often or the member is dropped.
-    /// Client sends every ~3 s, so 10 s gives us three misses of slack.
     const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
-    /// A Finished lobby lingers for this long so the row briefly shows
-    /// "Finished" in everyone's browser before disappearing.
     const FINISHED_GRACE: Duration = Duration::from_secs(5);
 
+    /// Where to send game-server credentials. Set by main() based on env vars.
+    #[derive(Clone)]
+    pub struct GameEndpoint {
+        pub url: String,
+    }
+
     struct MemberInfo {
-        peer_id: Option<String>,
         last_heartbeat: Instant,
+        /// Allocated when StartLobby fires.
+        client_id: Option<u64>,
     }
 
     struct LobbyRecord {
         lobby: Lobby,
         host: ConnId,
         members: HashMap<ConnId, MemberInfo>,
+        /// 32-byte shared key, allocated on first StartLobby.
+        session_key: Option<[u8; 32]>,
+        next_client_id: u64,
     }
 
     pub struct AppState {
         lobbies: RwLock<HashMap<LobbyId, LobbyRecord>>,
         conns: RwLock<HashMap<ConnId, mpsc::UnboundedSender<ServerMsg>>>,
-        /// Fires whenever the lobby map changes. Per-connection tasks
-        /// subscribe and push fresh `LobbyList`s downstream on every tick.
         list_changed: broadcast::Sender<()>,
         next_conn: AtomicU64,
+        pub endpoint: GameEndpoint,
     }
 
     impl AppState {
-        pub fn new() -> Arc<Self> {
+        pub fn new(endpoint: GameEndpoint) -> Arc<Self> {
             let (tx, _) = broadcast::channel(16);
             Arc::new(Self {
                 lobbies: RwLock::new(HashMap::new()),
                 conns: RwLock::new(HashMap::new()),
                 list_changed: tx,
                 next_conn: AtomicU64::new(1),
+                endpoint,
             })
         }
     }
@@ -95,12 +100,11 @@ mod lobby_service {
 
     async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         let conn_id = state.next_conn.fetch_add(1, Ordering::Relaxed);
-        let (mut ws_tx, mut ws_rx) = socket.split();
+        let (mut ws_tx, mut ws_rx) = socket.split_inplace();
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<ServerMsg>();
 
         state.conns.write().await.insert(conn_id, out_tx.clone());
 
-        // Outgoing pump: mpsc → websocket. Encoded as JSON text frames.
         let outgoing = tokio::spawn(async move {
             while let Some(msg) = out_rx.recv().await {
                 let json = match serde_json::to_string(&msg) {
@@ -116,12 +120,10 @@ mod lobby_service {
             }
         });
 
-        // List-change watcher: re-broadcasts the snapshot to this conn.
         let list_state = state.clone();
         let list_tx = out_tx.clone();
         let mut list_sub = state.list_changed.subscribe();
         let listener = tokio::spawn(async move {
-            // Initial snapshot.
             let _ = list_tx.send(snapshot(&list_state).await);
             while list_sub.recv().await.is_ok() {
                 if list_tx.send(snapshot(&list_state).await).is_err() {
@@ -130,7 +132,6 @@ mod lobby_service {
             }
         });
 
-        // Incoming pump: parse ClientMsg, mutate state.
         while let Some(Ok(msg)) = ws_rx.next().await {
             let text = match msg {
                 Message::Text(t) => t,
@@ -149,7 +150,6 @@ mod lobby_service {
             handle_client_msg(&state, conn_id, &out_tx, parsed).await;
         }
 
-        // Connection gone — tear down our membership and tasks.
         disconnect(&state, conn_id).await;
         state.conns.write().await.remove(&conn_id);
         listener.abort();
@@ -165,7 +165,6 @@ mod lobby_service {
         match msg {
             ClientMsg::CreateLobby { settings } => {
                 let mut lobbies = state.lobbies.write().await;
-                // One lobby per connection. Reject if already in one.
                 if lobbies.values().any(|r| r.members.contains_key(&conn_id)) {
                     let _ = out_tx.send(ServerMsg::Error {
                         msg: "already in a lobby".into(),
@@ -177,8 +176,8 @@ mod lobby_service {
                 members.insert(
                     conn_id,
                     MemberInfo {
-                        peer_id: None,
                         last_heartbeat: Instant::now(),
+                        client_id: None,
                     },
                 );
                 lobbies.insert(
@@ -189,9 +188,12 @@ mod lobby_service {
                             settings,
                             state: LobbyState::Waiting,
                             players_present: 1,
+                            spectators_present: 0,
                         },
                         host: conn_id,
                         members,
+                        session_key: None,
+                        next_client_id: 1,
                     },
                 );
                 drop(lobbies);
@@ -215,14 +217,10 @@ mod lobby_service {
                     });
                     return;
                 };
-                if record.lobby.state != LobbyState::Waiting {
-                    let _ = out_tx.send(ServerMsg::JoinDenied {
-                        id,
-                        reason: "lobby already started".into(),
-                    });
-                    return;
-                }
-                if record.lobby.players_present >= MAX_PLAYERS {
+                // In-progress lobbies still accept connections as spectators.
+                if record.lobby.players_present >= MAX_PLAYERS
+                    && record.lobby.state == LobbyState::Waiting
+                {
                     let _ = out_tx.send(ServerMsg::JoinDenied {
                         id,
                         reason: "lobby full".into(),
@@ -232,13 +230,42 @@ mod lobby_service {
                 record.members.insert(
                     conn_id,
                     MemberInfo {
-                        peer_id: None,
                         last_heartbeat: Instant::now(),
+                        client_id: None,
                     },
                 );
-                record.lobby.players_present = record.members.len() as u8;
+                if record.lobby.state == LobbyState::Waiting {
+                    record.lobby.players_present = record.members.len() as u8;
+                } else {
+                    record.lobby.spectators_present =
+                        record.lobby.spectators_present.saturating_add(1);
+                }
+                let in_progress = record.lobby.state != LobbyState::Waiting;
+                let session_key = record.session_key;
+                let id_for_send = id.clone();
                 info!("conn {} joined lobby {}", conn_id, id);
-                drop(lobbies);
+                if in_progress && session_key.is_some() {
+                    // Allocate a client_id for the spectator and hand them
+                    // the existing session's credentials so they can connect.
+                    record.next_client_id += 1;
+                    let client_id = record.next_client_id;
+                    if let Some(member) = record.members.get_mut(&conn_id) {
+                        member.client_id = Some(client_id);
+                    }
+                    let creds = GameSessionCreds {
+                        endpoint: state.endpoint.url.clone(),
+                        client_id,
+                        private_key: session_key.unwrap(),
+                        protocol_id: PROTOCOL_ID,
+                    };
+                    drop(lobbies);
+                    let _ = out_tx.send(ServerMsg::GameSessionReady {
+                        id: id_for_send,
+                        creds,
+                    });
+                } else {
+                    drop(lobbies);
+                }
                 let _ = state.list_changed.send(());
             }
             ClientMsg::StartLobby { id } => {
@@ -246,45 +273,50 @@ mod lobby_service {
                 let Some(record) = lobbies.get_mut(&id) else {
                     return;
                 };
-                if record.host != conn_id || record.lobby.state != LobbyState::Waiting {
+                if record.host != conn_id {
                     return;
                 }
-                // Roster is sorted by ConnId to give every client the same
-                // deterministic ordering (important for GGRS player handles).
-                let total_members = record.members.len();
-                let mut roster_pairs: Vec<(ConnId, String)> = record
-                    .members
-                    .iter()
-                    .filter_map(|(c, m)| m.peer_id.clone().map(|p| (*c, p)))
-                    .collect();
-                roster_pairs.sort_by_key(|(c, _)| *c);
-                let roster: Vec<String> =
-                    roster_pairs.into_iter().map(|(_, p)| p).collect();
-                if roster.len() < 2 {
+                if record.lobby.players_present < 2 {
                     let _ = out_tx.send(ServerMsg::Error {
                         msg: "need at least 2 players".into(),
                     });
                     return;
                 }
-                // All present members must have heartbeated their matchbox
-                // PeerId — otherwise starting would silently kick them out of
-                // the roster. Better to make the host wait a moment.
-                if roster.len() < total_members {
-                    let _ = out_tx.send(ServerMsg::Error {
-                        msg: "Some players aren't fully connected yet — try Start again in a moment".into(),
-                    });
-                    return;
+                // Allocate the session key on first start, then reuse for
+                // subsequent rounds.
+                if record.session_key.is_none() {
+                    let mut key = [0u8; 32];
+                    rand::thread_rng().fill_bytes(&mut key);
+                    record.session_key = Some(key);
                 }
-                record.lobby.state = LobbyState::Playing;
-                let targets: Vec<ConnId> = record.members.keys().copied().collect();
+                let key = record.session_key.unwrap();
+                record.lobby.state = LobbyState::InProgress;
+                // Allocate client_ids for each member who doesn't have one.
+                let mut handouts: Vec<(ConnId, GameSessionCreds)> = Vec::new();
+                let mut next_id = record.next_client_id;
+                for (cid, member) in record.members.iter_mut() {
+                    if member.client_id.is_none() {
+                        next_id += 1;
+                        member.client_id = Some(next_id);
+                    }
+                    let creds = GameSessionCreds {
+                        endpoint: state.endpoint.url.clone(),
+                        client_id: member.client_id.unwrap(),
+                        private_key: key,
+                        protocol_id: PROTOCOL_ID,
+                    };
+                    handouts.push((*cid, creds));
+                }
+                record.next_client_id = next_id;
                 drop(lobbies);
-                info!("starting lobby {} with {} players", id, roster.len());
+
+                info!("starting lobby {} ({} members)", id, handouts.len());
                 let conns = state.conns.read().await;
-                for cid in targets {
+                for (cid, creds) in handouts {
                     if let Some(tx) = conns.get(&cid) {
-                        let _ = tx.send(ServerMsg::LobbyStarting {
+                        let _ = tx.send(ServerMsg::GameSessionReady {
                             id: id.clone(),
-                            roster: roster.clone(),
+                            creds,
                         });
                     }
                 }
@@ -304,7 +336,7 @@ mod lobby_service {
                 drop(lobbies);
                 let _ = state.list_changed.send(());
             }
-            ClientMsg::Heartbeat { id, peer_id } => {
+            ClientMsg::Heartbeat { id } => {
                 let mut lobbies = state.lobbies.write().await;
                 let Some(record) = lobbies.get_mut(&id) else {
                     return;
@@ -313,18 +345,6 @@ mod lobby_service {
                     return;
                 };
                 member.last_heartbeat = Instant::now();
-                let pid_changed = peer_id.is_some() && member.peer_id != peer_id;
-                if peer_id.is_some() {
-                    member.peer_id = peer_id;
-                }
-                drop(lobbies);
-                if pid_changed {
-                    // Roster-affecting metadata changed; refresh subscribers
-                    // so any future Start uses the right PeerIds. (The
-                    // LobbyList itself doesn't include PeerIds, so this is
-                    // a no-op for the browser, but doesn't hurt.)
-                    let _ = state.list_changed.send(());
-                }
             }
             ClientMsg::LeaveLobby { id: _ } => {
                 disconnect(state, conn_id).await;
@@ -332,9 +352,6 @@ mod lobby_service {
         }
     }
 
-    /// Remove a connection from any lobby it is in. If the connection was
-    /// the host, tear down the lobby and `Kicked` everyone else. Always
-    /// fires a list-changed broadcast.
     async fn disconnect(state: &Arc<AppState>, conn_id: ConnId) {
         let mut to_kick: Vec<(ConnId, LobbyId, &'static str)> = Vec::new();
         let mut changed = false;
@@ -381,7 +398,6 @@ mod lobby_service {
         ServerMsg::LobbyList { lobbies: list }
     }
 
-    /// Drops timed-out members and Finished lobbies on a 1 Hz cadence.
     async fn gc_loop(state: Arc<AppState>) {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         loop {
@@ -421,113 +437,40 @@ mod lobby_service {
             }
         }
     }
-}
 
-#[cfg(not(target_arch = "wasm32"))]
-mod signaling_proxy {
-    //! Reverse-proxies browser WebSocket upgrades on `/signaling/{room}`
-    //! through to the loopback matchbox signaling server. Lets the
-    //! deployment expose a single external port for static files + lobby
-    //! WS + signaling, instead of needing a second open port (and a second
-    //! TLS termination) for matchbox.
-    use axum::Router;
-    use axum::extract::Path;
-    use axum::extract::ws::{Message as AxumMsg, WebSocket, WebSocketUpgrade};
-    use axum::response::IntoResponse;
-    use axum::routing::get;
-    use futures_util::{SinkExt, StreamExt};
-    use log::{debug, warn};
-    use std::net::SocketAddr;
-    use tokio_tungstenite::tungstenite::Message as TungMsg;
-
-    pub fn router(upstream_addr: SocketAddr) -> Router {
-        Router::new().route(
-            "/signaling/{room}",
-            get(move |ws, path| proxy_ws(ws, path, upstream_addr)),
-        )
+    use axum::extract::ws::Utf8Bytes;
+    trait WsExt {
+        fn split_inplace(
+            self,
+        ) -> (
+            futures_util::stream::SplitSink<WebSocket, Message>,
+            futures_util::stream::SplitStream<WebSocket>,
+        );
     }
-
-    async fn proxy_ws(
-        ws: WebSocketUpgrade,
-        Path(room): Path<String>,
-        upstream_addr: SocketAddr,
-    ) -> impl IntoResponse {
-        ws.on_upgrade(move |client| async move {
-            let url = format!("ws://{}/{}", upstream_addr, room);
-            debug!("signaling proxy: opening upstream {}", url);
-            let (upstream, _) = match tokio_tungstenite::connect_async(&url).await {
-                Ok(pair) => pair,
-                Err(e) => {
-                    warn!("signaling proxy upstream connect failed: {}", e);
-                    return;
-                }
-            };
-            pump(client, upstream).await;
-        })
-    }
-
-    async fn pump(
-        client: WebSocket,
-        upstream: tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-    ) {
-        let (mut client_tx, mut client_rx) = client.split();
-        let (mut up_tx, mut up_rx) = upstream.split();
-
-        let c2u = async {
-            while let Some(Ok(msg)) = client_rx.next().await {
-                let Some(out) = axum_to_tung(msg) else { break };
-                if up_tx.send(out).await.is_err() {
-                    break;
-                }
-            }
-        };
-        let u2c = async {
-            while let Some(Ok(msg)) = up_rx.next().await {
-                let Some(out) = tung_to_axum(msg) else { break };
-                if client_tx.send(out).await.is_err() {
-                    break;
-                }
-            }
-        };
-
-        tokio::select! {
-            _ = c2u => {},
-            _ = u2c => {},
+    impl WsExt for WebSocket {
+        fn split_inplace(self) -> (
+            futures_util::stream::SplitSink<WebSocket, Message>,
+            futures_util::stream::SplitStream<WebSocket>,
+        ) {
+            use futures_util::StreamExt;
+            self.split()
         }
     }
-
-    fn axum_to_tung(m: AxumMsg) -> Option<TungMsg> {
-        Some(match m {
-            AxumMsg::Text(t) => TungMsg::Text(t.as_str().into()),
-            AxumMsg::Binary(b) => TungMsg::Binary(b.to_vec().into()),
-            AxumMsg::Ping(p) => TungMsg::Ping(p.to_vec().into()),
-            AxumMsg::Pong(p) => TungMsg::Pong(p.to_vec().into()),
-            AxumMsg::Close(_) => return None,
-        })
-    }
-
-    fn tung_to_axum(m: TungMsg) -> Option<AxumMsg> {
-        Some(match m {
-            TungMsg::Text(t) => AxumMsg::Text(t.as_str().to_owned().into()),
-            TungMsg::Binary(b) => AxumMsg::Binary(b.to_vec().into()),
-            TungMsg::Ping(p) => AxumMsg::Ping(p.to_vec().into()),
-            TungMsg::Pong(p) => AxumMsg::Pong(p.to_vec().into()),
-            TungMsg::Close(_) | TungMsg::Frame(_) => return None,
-        })
-    }
+    // hack to keep Utf8Bytes available in error messages; not used otherwise
+    #[allow(dead_code)]
+    fn _u(_: Utf8Bytes) {}
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[tokio::main]
-async fn main() {
-    use axum::Router;
+mod game_server;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn main() {
+    use bevy::prelude::*;
     use log::{error, info};
-    use matchbox_signaling::SignalingServer;
     use std::env;
     use std::net::SocketAddr;
-    use tower_http::services::ServeDir;
+    use std::sync::Arc;
 
     colog::init();
 
@@ -535,45 +478,56 @@ async fn main() {
         .unwrap_or_else(|_| "0.0.0.0:1234".to_string())
         .parse()
         .expect("HTTP_ADDR must be a valid socket address");
-    // Default to loopback — the HTTP server proxies `/signaling/{room}` to
-    // this address, so there is no reason to expose it externally. Override
-    // with MATCHBOX_ADDR=0.0.0.0:3536 to expose it directly (skipping the
-    // proxy).
-    let ws_addr: SocketAddr = env::var("MATCHBOX_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:3536".to_string())
+    let game_addr: SocketAddr = env::var("GAME_ADDR")
+        .unwrap_or_else(|_| "0.0.0.0:1235".to_string())
         .parse()
-        .expect("MATCHBOX_ADDR must be a valid socket address");
+        .expect("GAME_ADDR must be a valid socket address");
+    // The endpoint URL we advertise to clients. Native dev uses ws://,
+    // production behind TLS overrides with `wss://` via env.
+    let endpoint_url = env::var("GAME_PUBLIC_URL")
+        .unwrap_or_else(|_| format!("ws://{}", game_addr));
 
-    let signaling = tokio::spawn(async move {
-        info!("matchbox signaling listening on ws://{} (proxied)", ws_addr);
-        let server = SignalingServer::full_mesh_builder(ws_addr).build();
-        if let Err(e) = server.serve().await {
-            error!("matchbox signaling exited: {}", e);
-        }
+    // Run axum + lobby in a tokio runtime on a dedicated thread.
+    let lobby_endpoint = lobby_service::GameEndpoint {
+        url: endpoint_url.clone(),
+    };
+    let _tokio_thread = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        rt.block_on(async move {
+            use axum::Router;
+            use tower_http::services::ServeDir;
+            let lobby_state = lobby_service::AppState::new(lobby_endpoint);
+            let app: Router = Router::new()
+                .merge(lobby_service::router(lobby_state))
+                .fallback_service(ServeDir::new("web"));
+            let listener = match tokio::net::TcpListener::bind(http_addr).await {
+                Ok(l) => l,
+                Err(e) => {
+                    error!("http bind {}: {}", http_addr, e);
+                    return;
+                }
+            };
+            info!("http static + lobby ws on http://{}", http_addr);
+            if let Err(e) = axum::serve(listener, app).await {
+                error!("http server exited: {}", e);
+            }
+        });
     });
 
-    let lobby_state = lobby_service::AppState::new();
-    let http = tokio::spawn(async move {
-        let app: Router = Router::new()
-            .merge(lobby_service::router(lobby_state))
-            .merge(signaling_proxy::router(ws_addr))
-            .fallback_service(ServeDir::new("web"));
-        let listener = tokio::net::TcpListener::bind(http_addr)
-            .await
-            .expect("http bind");
-        info!(
-            "http static server + lobby ws listening on http://{}",
-            http_addr
-        );
-        if let Err(e) = axum::serve(listener, app).await {
-            error!("http server exited: {}", e);
-        }
-    });
+    let _ = Arc::new(()); // suppress unused-import warning if any
+    info!("game server (Lightyear) on ws://{}", game_addr);
 
-    tokio::select! {
-        _ = signaling => error!("signaling task exited"),
-        _ = http => error!("http task exited"),
-    }
+    // Run the Bevy + Lightyear game server.
+    bevy::app::App::new()
+        .add_plugins(bevy::MinimalPlugins)
+        .add_plugins(bevy::log::LogPlugin::default())
+        .add_plugins(game_server::GameServerPlugin {
+            bind: game_addr,
+        })
+        .run();
 }
 
 #[cfg(target_arch = "wasm32")]

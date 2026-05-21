@@ -1,7 +1,6 @@
 use bevy::prelude::*;
-use bevy_ggrs::Session;
 use lobby::CurrentLobby;
-use net::GameConfig;
+use net::{ConnectStage, NetStatus, SessionIdentity};
 
 mod lobby;
 mod net;
@@ -66,18 +65,20 @@ fn main() {
 /// GGRS deterministically. The UI shows a "Game over" banner while snakes
 /// are empty.
 fn drive_state(
-    session: Option<Res<Session<GameConfig>>>,
+    status: Res<NetStatus>,
+    identity: Res<SessionIdentity>,
     state: Res<State<ClientState>>,
     mut next: ResMut<NextState<ClientState>>,
     current: Res<CurrentLobby>,
 ) {
-    match (state.get(), session.is_some()) {
-        (ClientState::WaitingForOpponent, true) => {
+    match (state.get(), &status.stage) {
+        (ClientState::WaitingForOpponent, ConnectStage::Playing) => {
             next.set(ClientState::Playing);
         }
-        (ClientState::Playing, false) => {
-            // Session was torn down by something external (peer disconnect,
-            // explicit teardown). Solo never reaches this branch.
+        (ClientState::Playing, stage)
+            if !matches!(stage, ConnectStage::Playing)
+                && !matches!(stage, ConnectStage::AwaitingWelcome) =>
+        {
             let dest = if current.id.is_some() {
                 ClientState::Finished
             } else {
@@ -87,6 +88,7 @@ fn drive_state(
         }
         _ => {}
     }
+    let _ = identity;
 }
 
 fn exit_on_cmd_w(mut exit: MessageWriter<AppExit>, keys: Res<ButtonInput<KeyCode>>) {

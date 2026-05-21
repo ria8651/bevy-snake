@@ -17,10 +17,9 @@
 //! outgoing `ClientMsg`s queued by helper methods get flushed each tick.
 
 use crate::ClientState;
-use crate::net::{ConnectStage, NetStatus};
+use crate::net::{ConnectStage, NetStatus, PendingSession};
 use crate::notice::Notice;
 use bevy::prelude::*;
-use bevy_matchbox::prelude::PeerId;
 use bevy_snake::lobby_proto::{ClientMsg, Lobby, LobbyId, LobbyState, ServerMsg};
 use bevy_snake::settings::GameSettings;
 use ewebsock::{Options, WsEvent, WsMessage, WsReceiver, WsSender};
@@ -54,27 +53,14 @@ pub enum Role {
 /// written by both the lobby plugin and the UI.
 #[derive(Resource, Default)]
 pub struct CurrentLobby {
-    /// `Some` when we're in a networked lobby (host or joiner). `None` for
-    /// solo play and for "no lobby right now".
     pub id: Option<LobbyId>,
-    /// Matchbox room name to connect to (`format!("lobby-{id}")`). Set
-    /// alongside `id`. Kept separate so net.rs doesn't need to know the
-    /// id-to-room-name convention.
-    pub room_name: Option<String>,
     pub role: Role,
-    /// Frozen peer ordering from the server's `LobbyStarting` broadcast.
-    /// `wait_for_players` waits until `socket.players()` matches this set
-    /// (including the local peer), then builds the GGRS session in roster
-    /// order.
-    pub start_roster: Option<Vec<PeerId>>,
 }
 
 impl CurrentLobby {
     pub fn clear(&mut self) {
         self.id = None;
-        self.room_name = None;
         self.role = Role::None;
-        self.start_roster = None;
     }
 }
 
@@ -103,9 +89,6 @@ pub struct LobbyClient {
     /// Seconds since the last reconnect attempt while disconnected.
     /// Drives the `RECONNECT_BACKOFF_SECS` retry cadence.
     reconnect_acc: f32,
-    /// Cached most-recent local matchbox peer id, refreshed each Update
-    /// from the live socket. Sent in every heartbeat once known.
-    pub last_peer_id: Option<String>,
 }
 
 impl Default for LobbyClient {
@@ -117,7 +100,6 @@ impl Default for LobbyClient {
             pending: Vec::new(),
             heartbeat_acc: 0.0,
             reconnect_acc: 0.0,
-            last_peer_id: None,
         }
     }
 }
@@ -257,10 +239,9 @@ fn reconnect_tick(
     }
 }
 
-/// Drains the WS receiver, dispatches messages, then flushes outbound. Also
-/// tracks the local matchbox peer id from the live `MatchboxSocket` so the
-/// next heartbeat includes it.
+/// Drains the WS receiver, dispatches messages, then flushes outbound.
 fn pump_lobby_ws(
+    mut commands: Commands,
     mut client: NonSendMut<LobbyClient>,
     mut list: ResMut<LobbyList>,
     mut current: ResMut<CurrentLobby>,
@@ -269,24 +250,7 @@ fn pump_lobby_ws(
     mut status: ResMut<NetStatus>,
     mut notice: ResMut<Notice>,
     time: Res<Time<Real>>,
-    mut socket: Option<ResMut<bevy_matchbox::prelude::MatchboxSocket>>,
 ) {
-    // Refresh known peer id from matchbox. `id()` needs `&mut self` on the
-    // underlying socket — once known it's stable, but the call still
-    // requires mutable access to lazily resolve it.
-    let new_peer_id = socket
-        .as_mut()
-        .and_then(|s| s.id().map(|p| p.0.to_string()));
-    // Force an immediate heartbeat the instant our matchbox PeerId is first
-    // resolved, so the server learns it without waiting up to one full
-    // heartbeat interval. Without this the host can click Start in the
-    // window between "PeerId known here" and "PeerId reported", silently
-    // kicking this client out of the roster.
-    if client.last_peer_id.is_none() && new_peer_id.is_some() {
-        client.heartbeat_acc = HEARTBEAT_INTERVAL_SECS;
-    }
-    client.last_peer_id = new_peer_id;
-
     for ev in client.drain_events() {
         match ev {
             WsEvent::Opened => {
@@ -330,7 +294,7 @@ fn pump_lobby_ws(
             WsEvent::Message(WsMessage::Text(text)) => {
                 handle_server_text(
                     &text,
-                    &mut client,
+                    &mut commands,
                     &mut list,
                     &mut current,
                     &mut next,
@@ -348,7 +312,7 @@ fn pump_lobby_ws(
 
 fn handle_server_text(
     text: &str,
-    client: &mut LobbyClient,
+    commands: &mut Commands,
     list: &mut LobbyList,
     current: &mut CurrentLobby,
     next: &mut NextState<ClientState>,
@@ -368,43 +332,18 @@ fn handle_server_text(
         ServerMsg::LobbyCreated { id } => {
             info!("lobby created: {}", id);
             current.id = Some(id.clone());
-            current.room_name = Some(format!("lobby-{}", id));
             current.role = Role::Host;
-            current.start_roster = None;
             next.set(ClientState::WaitingForOpponent);
         }
-        ServerMsg::LobbyStarting { id, roster } => {
+        ServerMsg::GameSessionReady { id, creds } => {
             if current.id.as_deref() != Some(&id) {
                 return;
             }
-            let parsed: Vec<PeerId> = roster
-                .iter()
-                .filter_map(|s| {
-                    uuid::Uuid::parse_str(s).ok().map(PeerId)
-                })
-                .collect();
-            // If we're not in the roster ourselves, the server filtered us
-            // out (likely because our matchbox PeerId hadn't been
-            // heartbeated yet). Bounce back rather than hang.
-            let my_pid = client
-                .last_peer_id
-                .as_deref()
-                .and_then(|s| uuid::Uuid::parse_str(s).ok())
-                .map(PeerId);
-            if let Some(me) = my_pid
-                && !parsed.contains(&me)
-            {
-                warn!("not in start roster, returning to browser");
-                notice.error(
-                    time,
-                    "Your matchbox connection wasn't ready when the host started — try again",
-                );
-                current.clear();
-                next.set(ClientState::Browsing);
-                return;
+            info!("game session ready for lobby {}", id);
+            commands.insert_resource(PendingSession { creds });
+            if state != &ClientState::WaitingForOpponent {
+                next.set(ClientState::WaitingForOpponent);
             }
-            info!("start roster: {} players", parsed.len());
-            current.start_roster = Some(parsed);
         }
         ServerMsg::JoinDenied { id, reason } => {
             warn!("join denied for {}: {}", id, reason);
@@ -444,7 +383,6 @@ fn heartbeat(
     let Some(id) = current.id.clone() else {
         return;
     };
-    let peer_id = client.last_peer_id.clone();
-    client.enqueue(ClientMsg::Heartbeat { id, peer_id });
+    client.enqueue(ClientMsg::Heartbeat { id });
 }
 

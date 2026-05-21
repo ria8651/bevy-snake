@@ -1,4 +1,4 @@
-use crate::net::{InputQueues, InterpolationPhase, MovementFrame};
+use crate::net::{InputQueues, InterpolationPhase, RenderClock};
 use bevy::{
     camera::{Camera, ClearColorConfig, RenderTarget, ScalingMode},
     image::ImageSampler,
@@ -162,7 +162,7 @@ fn draw_board(
     mut apples: Local<HashMap<IVec2, Entity>>,
     mut walls: Local<HashMap<IVec2, Entity>>,
     board: Res<Board>,
-    movement_frame: Res<MovementFrame>,
+    render_clock: Res<RenderClock>,
     queues: Res<InputQueues>,
     phase: Res<InterpolationPhase>,
     board_tiles: Query<Entity, With<BoardTile>>,
@@ -291,7 +291,7 @@ fn draw_board(
         commands.entity(entity).despawn();
     }
 
-    let interpolation = movement_frame.movement_progress();
+    let interpolation = render_clock.movement_progress(time.elapsed_secs_f64());
 
     for (snake_id, snake) in board.snakes().into_iter() {
         let mut parts: Vec<Vec2> = snake.parts.iter().map(|pos| pos.as_vec2()).collect();
