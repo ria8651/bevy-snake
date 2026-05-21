@@ -99,8 +99,9 @@ mod lobby_service {
     }
 
     async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
+        use futures_util::{SinkExt, StreamExt};
         let conn_id = state.next_conn.fetch_add(1, Ordering::Relaxed);
-        let (mut ws_tx, mut ws_rx) = socket.split_inplace();
+        let (mut ws_tx, mut ws_rx) = socket.split();
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<ServerMsg>();
 
         state.conns.write().await.insert(conn_id, out_tx.clone());
@@ -438,27 +439,6 @@ mod lobby_service {
         }
     }
 
-    use axum::extract::ws::Utf8Bytes;
-    trait WsExt {
-        fn split_inplace(
-            self,
-        ) -> (
-            futures_util::stream::SplitSink<WebSocket, Message>,
-            futures_util::stream::SplitStream<WebSocket>,
-        );
-    }
-    impl WsExt for WebSocket {
-        fn split_inplace(self) -> (
-            futures_util::stream::SplitSink<WebSocket, Message>,
-            futures_util::stream::SplitStream<WebSocket>,
-        ) {
-            use futures_util::StreamExt;
-            self.split()
-        }
-    }
-    // hack to keep Utf8Bytes available in error messages; not used otherwise
-    #[allow(dead_code)]
-    fn _u(_: Utf8Bytes) {}
 }
 
 #[cfg(not(target_arch = "wasm32"))]

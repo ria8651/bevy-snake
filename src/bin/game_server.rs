@@ -103,7 +103,7 @@ fn start_server(
             Name::from("GameServer"),
         ))
         .id();
-    commands.trigger_targets(Start, server);
+    commands.trigger(Start { entity: server });
 
     // Initialize a default board for a Waiting state. The actual game
     // starts when the first client connects + host starts.

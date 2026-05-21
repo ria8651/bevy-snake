@@ -280,7 +280,8 @@ fn open_session(
             Name::from("GameClient"),
         ))
         .id();
-    commands.trigger_targets(Connect, entity);
+    let _ = entity;
+    commands.trigger(Connect { entity });
 }
 
 /// Best-effort: parse `ws[s]://host:port` into a SocketAddr used by the
