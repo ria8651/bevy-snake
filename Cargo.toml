@@ -41,6 +41,10 @@ log = "0.4"
 ewebsock = "0.8"
 uuid = { version = "1.4", features = ["serde"] }
 
+# wasm-only: read window.location to derive same-origin WS URLs at runtime
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Location"] }
+
 # server only dependencies, don't work on wasm
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", features = ["full"] }

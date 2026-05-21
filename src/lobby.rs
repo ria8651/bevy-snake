@@ -25,13 +25,10 @@ use bevy_snake::lobby_proto::{ClientMsg, Lobby, LobbyId, LobbyState, ServerMsg};
 use bevy_snake::settings::GameSettings;
 use ewebsock::{Options, WsEvent, WsMessage, WsReceiver, WsSender};
 
-/// WebSocket URL of the lobby service. Compile-time override at the same
-/// build step you'd set `MATCHBOX_ROOM_URL`. Defaults to the colocated
-/// static server.
+/// WebSocket URL of the lobby service. See [`crate::net::server_url`] for
+/// the wasm-vs-native resolution rules.
 fn lobby_ws_url() -> String {
-    option_env!("LOBBY_WS_URL")
-        .unwrap_or("ws://localhost:1234/lobbies")
-        .to_string()
+    crate::net::server_url("/lobbies")
 }
 
 /// Heartbeat cadence — server times out at 10 s, so 3 s gives three
@@ -277,9 +274,18 @@ fn pump_lobby_ws(
     // Refresh known peer id from matchbox. `id()` needs `&mut self` on the
     // underlying socket — once known it's stable, but the call still
     // requires mutable access to lazily resolve it.
-    client.last_peer_id = socket
+    let new_peer_id = socket
         .as_mut()
         .and_then(|s| s.id().map(|p| p.0.to_string()));
+    // Force an immediate heartbeat the instant our matchbox PeerId is first
+    // resolved, so the server learns it without waiting up to one full
+    // heartbeat interval. Without this the host can click Start in the
+    // window between "PeerId known here" and "PeerId reported", silently
+    // kicking this client out of the roster.
+    if client.last_peer_id.is_none() && new_peer_id.is_some() {
+        client.heartbeat_acc = HEARTBEAT_INTERVAL_SECS;
+    }
+    client.last_peer_id = new_peer_id;
 
     for ev in client.drain_events() {
         match ev {

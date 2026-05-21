@@ -229,7 +229,11 @@ impl Plugin for NetPlugin {
             .add_systems(OnEnter(ClientState::Browsing), reset_to_browsing_stage)
             .add_systems(
                 Update,
-                (wait_for_players, drain_ggrs_events, buffer_local_input),
+                (
+                    wait_for_players.run_if(in_state(ClientState::WaitingForOpponent)),
+                    drain_ggrs_events,
+                    buffer_local_input,
+                ),
             )
             .add_systems(ReadInputs, read_local_input)
             .add_systems(
@@ -239,19 +243,47 @@ impl Plugin for NetPlugin {
     }
 }
 
-/// Build the full matchbox URL for a specific room name. Each lobby has
-/// its own room, so the `?next={N}` bucketing that the old global "snake"
-/// room used is gone — the lobby Start broadcast is the readiness signal
-/// instead.
-///
-/// The default base points at the same-origin proxy path served by
-/// `src/bin/server.rs`, so a single external port covers both static files
-/// and signaling. Set `MATCHBOX_ROOM_URL` at compile time to point at a
-/// different host (e.g. `wss://example.org/signaling`).
+/// Build the matchbox room URL. Each lobby has its own room, so the
+/// `?next={N}` bucketing that the old global "snake" room used is gone —
+/// the lobby Start broadcast is the readiness signal instead.
 fn room_url(room_name: &str) -> String {
-    let base = option_env!("MATCHBOX_ROOM_URL").unwrap_or("ws://localhost:1234/signaling");
-    let base = base.trim_end_matches('/');
-    format!("{}/{}", base, room_name)
+    server_url(&format!("/signaling/{}", room_name))
+}
+
+/// Returns `ws[s]://{host}{path}` pointing at the bevy-snake HTTP server.
+///
+/// - **wasm**: derived from `window.location`, so a deployed build connects
+///   back to the host that served the page (`wss://` over HTTPS, `ws://`
+///   otherwise). The page itself is the ground truth.
+/// - **native**: `SERVER_URL` at compile time (e.g.
+///   `SERVER_URL=wss://example.org`), defaulting to the local dev server.
+pub(crate) fn server_url(path: &str) -> String {
+    #[cfg(target_arch = "wasm32")]
+    {
+        same_origin_ws_url(path).unwrap_or_else(|| format!("ws://localhost:1234{}", path))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let base = option_env!("SERVER_URL")
+            .unwrap_or("ws://localhost:1234")
+            .trim_end_matches('/');
+        format!("{}{}", base, path)
+    }
+}
+
+/// Return `ws[s]://{host}{path}` matching the page's origin — `wss://`
+/// when the page is served over HTTPS, `ws://` otherwise. Returns `None`
+/// if the JS bindings can't read the location (sandboxed iframe, etc.).
+#[cfg(target_arch = "wasm32")]
+fn same_origin_ws_url(path: &str) -> Option<String> {
+    let location = web_sys::window()?.location();
+    let protocol = location.protocol().ok()?;
+    let host = location.host().ok()?;
+    if host.is_empty() {
+        return None;
+    }
+    let scheme = if protocol == "https:" { "wss" } else { "ws" };
+    Some(format!("{}://{}{}", scheme, host, path))
 }
 
 /// Entered when the user clicks Play / Host / Join, **after**
@@ -357,7 +389,18 @@ fn mark_playing_stage(mut status: ResMut<NetStatus>) {
 /// Re-entering the Browsing screen resets connection status to a clean
 /// idle / "lobby connected" — whichever applies. The actual value is set
 /// by the lobby plugin once it observes its WS state.
-fn reset_to_browsing_stage(mut status: ResMut<NetStatus>) {
+fn reset_to_browsing_stage(
+    mut commands: Commands,
+    mut status: ResMut<NetStatus>,
+    mut deadline: ResMut<WaitForPeersDeadline>,
+) {
+    // Drop any lingering matchbox socket from an abandoned host/join attempt
+    // — otherwise `wait_for_players` keeps running, sees the orphaned socket,
+    // and stamps `OpeningMatchbox` every frame, which the connectivity pill
+    // reads as "Lobby server unreachable".
+    commands.remove_resource::<MatchboxSocket>();
+    commands.remove_resource::<Session<GameConfig>>();
+    deadline.started_at = None;
     // Leave whatever the lobby plugin has set; this default catches the
     // case where the lobby WS is fine and we just bounced from a failed
     // multiplayer attempt.
@@ -393,7 +436,6 @@ fn abort_to_browser(
 /// pushes a [`Notice`] (visible in the top-of-screen banner). Runs every
 /// `Update`; no-op when no P2P session is present.
 fn drain_ggrs_events(
-    mut commands: Commands,
     session: Option<ResMut<Session<GameConfig>>>,
     mut status: ResMut<NetStatus>,
     mut notice: ResMut<Notice>,
@@ -404,7 +446,6 @@ fn drain_ggrs_events(
         Session::P2P(s) => s.events().collect(),
         _ => return,
     };
-    let mut end_session = false;
     for ev in events {
         match ev {
             GgrsEvent::Synchronizing { count, total, .. } => {
@@ -429,14 +470,14 @@ fn drain_ggrs_events(
                 notice.clear_transient();
             }
             GgrsEvent::Disconnected { addr } => {
-                // GGRS keeps the session alive after a peer drops — local
-                // sim would otherwise continue indefinitely with phantom
-                // input from the gone peer. End the round so the existing
-                // session-gone → Finished route in `drive_state` fires and
-                // shows the disconnect reason as the Finished subtitle.
+                // Don't tear down the session — let the round play out.
+                // GGRS keeps simulating with the disconnected peer's last
+                // input (no direction change), so their snake idles in
+                // whatever direction it was heading and eventually hits a
+                // wall. Remaining peers play on; in a 2-player game the
+                // dropped player just loses.
                 warn!("peer disconnected: {}", addr);
-                notice.error(&time, format!("Peer disconnected: {addr}"));
-                end_session = true;
+                notice.warn(&time, format!("Peer {addr} dropped — they'll lose this round"));
             }
             GgrsEvent::DesyncDetected { frame, .. } => {
                 warn!("desync at frame {}", frame);
@@ -444,10 +485,6 @@ fn drain_ggrs_events(
             }
             GgrsEvent::WaitRecommendation { .. } => {}
         }
-    }
-    if end_session {
-        commands.remove_resource::<Session<GameConfig>>();
-        commands.remove_resource::<MatchboxSocket>();
     }
 }
 

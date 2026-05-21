@@ -77,9 +77,12 @@ new resource needs rollback, register it with
   `GgrsSchedule`. Solo-mode seeding in `start_session` uses
   `rand::random::<u64>()` only because that happens **outside** the
   rollback schedule.
-- `option_env!("MATCHBOX_ROOM_URL")` and `option_env!("LOBBY_WS_URL")` are
-  compile-time. The matchbox base is composed with the lobby's room name
-  at runtime (`{base}/lobby-{id}`); player count is no longer in the URL.
+- `net::server_url(path)` is the single entry point for client→server WS
+  URLs. wasm derives them from `window.location`; native reads
+  `option_env!("SERVER_URL")` at compile time (defaulting to
+  `ws://localhost:1234`). Lobby calls `server_url("/lobbies")`; matchbox
+  calls `server_url("/signaling/lobby-{id}")` at runtime. Player count is
+  no longer in the URL.
 - The Start roster broadcast from the lobby server is the readiness
   signal — every peer arrives at the same `Vec<PeerId>` independently and
   builds GGRS players in that order, which deterministically assigns

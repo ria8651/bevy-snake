@@ -65,21 +65,20 @@ The main menu is a live lobby browser. To play multiplayer:
 
 ## Client compile-time URLs
 
-For a deploy behind a public hostname, override the URLs at the client's
-compile step:
+The wasm client always connects back to the host that served the page —
+no env var needed, the deploy hostname is whatever you put `web/` behind.
+
+The native client defaults to `ws://localhost:1234` (the colocated dev
+server). To point a native build at a remote bevy-snake server, set
+`SERVER_URL` at compile time:
 
 ```bash
-MATCHBOX_ROOM_URL=wss://bink.eu.org/signaling \
-LOBBY_WS_URL=wss://bink.eu.org/lobbies \
-  cargo build --release --target wasm32-unknown-unknown
+SERVER_URL=wss://bink.eu.org cargo build --release
 ```
 
 | Var | Default | Notes |
 |---|---|---|
-| `MATCHBOX_ROOM_URL` | `ws://localhost:1234/signaling` | Base of the matchbox signaling server. Defaults to the same-origin proxied path; set to e.g. `wss://example.org/signaling` for cross-origin deploys. Each lobby appends its own room name (`/lobby-{id}`). |
-| `LOBBY_WS_URL` | `ws://localhost:1234/lobbies` | Lobby directory WebSocket endpoint. |
-
-Use `wss://` so the WebSockets work from an HTTPS page.
+| `SERVER_URL` | `ws://localhost:1234` | Base WS URL of the bevy-snake server. `/lobbies` and `/signaling/{room}` are appended at the call sites. Use `wss://` when the server is behind HTTPS. Native only — wasm ignores it and uses the page origin. |
 
 ## License
 

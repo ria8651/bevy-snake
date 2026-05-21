@@ -251,6 +251,7 @@ mod lobby_service {
                 }
                 // Roster is sorted by ConnId to give every client the same
                 // deterministic ordering (important for GGRS player handles).
+                let total_members = record.members.len();
                 let mut roster_pairs: Vec<(ConnId, String)> = record
                     .members
                     .iter()
@@ -262,6 +263,15 @@ mod lobby_service {
                 if roster.len() < 2 {
                     let _ = out_tx.send(ServerMsg::Error {
                         msg: "need at least 2 players".into(),
+                    });
+                    return;
+                }
+                // All present members must have heartbeated their matchbox
+                // PeerId — otherwise starting would silently kick them out of
+                // the roster. Better to make the host wait a moment.
+                if roster.len() < total_members {
+                    let _ = out_tx.send(ServerMsg::Error {
+                        msg: "Some players aren't fully connected yet — try Start again in a moment".into(),
                     });
                     return;
                 }
