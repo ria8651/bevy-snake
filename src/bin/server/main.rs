@@ -464,8 +464,11 @@ fn main() {
         .expect("GAME_ADDR must be a valid socket address");
     // The endpoint URL we advertise to clients. Native dev uses ws://,
     // production behind TLS overrides with `wss://` via env.
+    // Lightyear's WebSocket server uses TLS (self-signed cert), so the
+    // public URL is wss://. Override with GAME_PUBLIC_URL behind a TLS
+    // terminator.
     let endpoint_url = env::var("GAME_PUBLIC_URL")
-        .unwrap_or_else(|_| format!("ws://{}", game_addr));
+        .unwrap_or_else(|_| format!("wss://{}", game_addr));
 
     // Run axum + lobby in a tokio runtime on a dedicated thread.
     let lobby_endpoint = lobby_service::GameEndpoint {
