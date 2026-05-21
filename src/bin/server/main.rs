@@ -287,7 +287,7 @@ mod lobby_service {
                 // subsequent rounds.
                 if record.session_key.is_none() {
                     let mut key = [0u8; 32];
-                    rand::thread_rng().fill_bytes(&mut key);
+                    rand::rng().fill_bytes(&mut key);
                     record.session_key = Some(key);
                 }
                 let key = record.session_key.unwrap();

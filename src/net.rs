@@ -22,9 +22,8 @@ use bevy::prelude::*;
 use bevy_snake::board::{Board, Direction, PlayerCount};
 use bevy_snake::lobby_proto::GameSessionCreds;
 use bevy_snake::net_proto::{
-    GameProtocolPlugin, InputMsg, ReliableChannel, RequestJoinNextRound,
-    RequestStartRound, RoundEnded, RoundStarting, TickConfirmed, UnreliableChannel,
-    Welcome,
+    GameProtocolPlugin, InputMsg, ReliableChannel, RequestStartRound, RoundEnded,
+    RoundStarting, TickConfirmed, UnreliableChannel, Welcome,
 };
 use bevy_snake::settings::GameSettings;
 use lightyear::prelude::*;

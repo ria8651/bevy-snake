@@ -6,7 +6,7 @@
 //! we'd key per-session netcode protocol ids.
 
 use bevy::prelude::*;
-use bevy_snake::board::{Board, Direction, PlayerCount, TickOutcome};
+use bevy_snake::board::{Board, Direction, PlayerCount};
 use bevy_snake::net_proto::{
     GameProtocolPlugin, InputMsg, PROTOCOL_ID, Role as PlayerRole, ReliableChannel,
     RequestJoinNextRound, RequestStartRound, RoundEnded, RoundStarting, TickConfirmed,
