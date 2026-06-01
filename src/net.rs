@@ -20,14 +20,16 @@ use crate::lobby::{CurrentLobby, Role};
 use crate::notice::Notice;
 use bevy::prelude::*;
 use bevy_snake::board::{Board, Direction, PlayerCount};
+use bevy_snake::game_server::{GameSimPlugin, SERVER_TICK_HZ, SESSION_KEY, SessionState};
 use bevy_snake::lobby_proto::GameSessionCreds;
 use bevy_snake::net_proto::{
-    GameProtocolPlugin, InputMsg, ReliableChannel, RequestStartRound, RoundEnded,
+    GameProtocolPlugin, InputMsg, PROTOCOL_ID, ReliableChannel, RequestStartRound, RoundEnded,
     RoundStarting, TickConfirmed, UnreliableChannel, Welcome,
 };
 use bevy_snake::settings::GameSettings;
 use lightyear::prelude::*;
 use lightyear::prelude::client::*;
+use lightyear::prelude::server::{LinkOf, NetcodeServer, ServerPlugins, Start, Started, Stop};
 use lightyear::websocket::client::{WebSocketClientIo, WebSocketTarget};
 use lightyear::websocket::prelude::client::ClientConfig as WsClientConfig;
 use std::collections::VecDeque;
@@ -129,6 +131,13 @@ pub struct PendingSession {
 #[derive(Component)]
 pub struct GameClient;
 
+/// Marker on the in-process server entity used for solo play. The embedded
+/// `GameSimPlugin` runs the authoritative sim; the local client connects to
+/// it as a host-client (no socket, no netcode handshake) so solo works
+/// identically on native and wasm.
+#[derive(Component)]
+pub struct SoloServer;
+
 /// Buffer of recent `TickConfirmed` messages, kept for the
 /// render-behind interpolation buffer. We apply them in tick order in
 /// `apply_confirmed_ticks` and trim once applied.
@@ -157,7 +166,15 @@ impl Plugin for NetPlugin {
         app.add_plugins(ClientPlugins {
             tick_duration: Duration::from_secs_f64(1.0 / TICK_HZ),
         })
+        // The embedded authoritative server. It stays dormant during
+        // multiplayer (no local server entity is ever Started, so
+        // `tick_world` early-returns and no `ClientOf` observers fire) and
+        // is driven over an in-memory crossbeam link for solo play.
+        .add_plugins(ServerPlugins {
+            tick_duration: Duration::from_secs_f64(1.0 / SERVER_TICK_HZ),
+        })
         .add_plugins(GameProtocolPlugin)
+        .add_plugins(GameSimPlugin)
         .insert_resource(Board::new(default_settings.board))
         .insert_resource(InputQueues(vec![Vec::new(); default_players]))
         .insert_resource(PendingInput::default())
@@ -167,6 +184,7 @@ impl Plugin for NetPlugin {
         .init_resource::<NetStatus>()
         .init_resource::<SessionIdentity>()
         .init_resource::<TickInbox>()
+        .add_observer(connect_solo_client)
         .add_systems(OnEnter(ClientState::WaitingForOpponent), enter_waiting)
         .add_systems(
             Update,
@@ -222,28 +240,95 @@ fn same_origin_ws_url(path: &str) -> Option<String> {
 /// `ServerMsg::GameSessionReady`, which inserts a `PendingSession` resource
 /// and triggers [`connect_to_game_server`].
 fn enter_waiting(
+    mut commands: Commands,
     mut settings: ResMut<GameSettings>,
     mut board: ResMut<Board>,
     mut queues: ResMut<InputQueues>,
     mut identity: ResMut<SessionIdentity>,
     mut inbox: ResMut<TickInbox>,
+    mut session: ResMut<SessionState>,
+    mut status: ResMut<NetStatus>,
     current: Res<CurrentLobby>,
 ) {
     *identity = SessionIdentity::default();
     inbox.queue.clear();
-    if current.role == Role::Solo {
-        // TODO: spawn embedded server App for solo mode. Until then, Solo
-        // just sits in WaitingForOpponent with no network and no Welcome.
-        settings.board.players = PlayerCount::One;
-        *board = Board::new(settings.board);
-        *queues = InputQueues(vec![Vec::new(); 1]);
-        info!("solo session — embedded server not yet wired");
-        return;
-    }
-    // Network roles: wait for GameSessionReady → PendingSession.
     settings.board.players = PlayerCount::One;
     *board = Board::new(settings.board);
     *queues = InputQueues(vec![Vec::new(); 1]);
+
+    if current.role == Role::Solo {
+        start_solo_session(&mut commands, &mut session, &mut status, *settings);
+        return;
+    }
+    // Network roles: wait for GameSessionReady → PendingSession, which
+    // triggers `connect_to_game_server`.
+}
+
+/// Spin up the embedded authoritative server for solo play. The host-client
+/// is spawned later by [`connect_solo_client`], once the server is `Started`
+/// — the host-server `connect` observer only promotes a client to
+/// `Connected + ClientOf + HostClient` if its target server is already
+/// started, and `Started` lands a frame after the `Start` trigger.
+///
+/// No socket and no netcode handshake: messages loop back in-process via
+/// `HostClient`, so from `Welcome` onward the existing client systems
+/// (`receive_welcome`, `send_local_input`, `apply_confirmed_ticks`,
+/// `receive_round_*`) drive the game exactly as in multiplayer.
+fn start_solo_session(
+    commands: &mut Commands,
+    session: &mut SessionState,
+    status: &mut NetStatus,
+    settings: GameSettings,
+) {
+    // Seed the embedded server with the player's chosen settings before the
+    // local client connects and `handle_connected` builds the board.
+    session.reset_for(settings);
+
+    // `NetcodeServer` requires `Server`, and `Start` inserts `Started` — all
+    // host-server needs (netcode itself is skipped for the host-client). No
+    // IO component, so nothing binds a socket.
+    let server = commands
+        .spawn((
+            // Fully-qualified: the `client::*` glob in scope brings a
+            // different `NetcodeConfig` (used by `NetcodeClient` elsewhere in
+            // this file), so name the server one explicitly.
+            NetcodeServer::new(lightyear::prelude::server::NetcodeConfig {
+                protocol_id: PROTOCOL_ID,
+                private_key: SESSION_KEY,
+                ..default()
+            }),
+            SoloServer,
+            Name::from("SoloServer"),
+        ))
+        .id();
+    commands.trigger(Start { entity: server });
+
+    status.stage = ConnectStage::ConnectingToGameServer;
+    info!("solo session started (embedded host-server)");
+}
+
+/// Observer: when the solo server finishes starting, spawn the host-client.
+/// `LinkOf { server }` + `Client` is what the host-server `connect` observer
+/// keys on; `GameClient` lets the existing client systems find it.
+fn connect_solo_client(
+    trigger: On<Add, Started>,
+    servers: Query<(), With<SoloServer>>,
+    mut commands: Commands,
+) {
+    let server = trigger.entity;
+    if servers.get(server).is_err() {
+        return;
+    }
+    let client = commands
+        .spawn((
+            Client::default(),
+            LinkOf { server },
+            GameClient,
+            Name::from("SoloClient"),
+        ))
+        .id();
+    commands.trigger(Connect { entity: client });
+    info!("solo host-client connecting to embedded server");
 }
 
 /// Runs once when `PendingSession` is inserted. Spawns the Lightyear client
@@ -308,11 +393,11 @@ fn connect_to_game_server(
 fn close_session(
     mut commands: Commands,
     clients: Query<Entity, With<GameClient>>,
+    solo_servers: Query<Entity, With<SoloServer>>,
     mut inbox: ResMut<TickInbox>,
+    mut session: ResMut<SessionState>,
 ) {
-    for e in clients.iter() {
-        commands.entity(e).despawn();
-    }
+    teardown_session(&mut commands, &clients, &solo_servers, &mut session);
     inbox.queue.clear();
     commands.remove_resource::<PendingSession>();
 }
@@ -321,10 +406,10 @@ fn reset_to_browsing_stage(
     mut commands: Commands,
     mut status: ResMut<NetStatus>,
     clients: Query<Entity, With<GameClient>>,
+    solo_servers: Query<Entity, With<SoloServer>>,
+    mut session: ResMut<SessionState>,
 ) {
-    for e in clients.iter() {
-        commands.entity(e).despawn();
-    }
+    teardown_session(&mut commands, &clients, &solo_servers, &mut session);
     commands.remove_resource::<PendingSession>();
     if !matches!(
         status.stage,
@@ -332,6 +417,24 @@ fn reset_to_browsing_stage(
     ) {
         status.stage = ConnectStage::LobbyConnected;
     }
+}
+
+/// Despawn the local client + (for solo) the embedded server, and reset the
+/// embedded session so a later solo game starts clean.
+fn teardown_session(
+    commands: &mut Commands,
+    clients: &Query<Entity, With<GameClient>>,
+    solo_servers: &Query<Entity, With<SoloServer>>,
+    session: &mut SessionState,
+) {
+    for e in clients.iter() {
+        commands.entity(e).despawn();
+    }
+    for e in solo_servers.iter() {
+        commands.trigger(Stop { entity: e });
+        commands.entity(e).despawn();
+    }
+    session.clear();
 }
 
 /// Capture local key presses into PendingInput each Update.

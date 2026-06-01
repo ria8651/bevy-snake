@@ -34,7 +34,7 @@ mod lobby_service {
     // sign auth tokens with the same private key the game server is configured
     // with. Multi-session isolation is a follow-up; when it lands, each lobby
     // will allocate its own key and pass it into a per-lobby NetcodeServer.
-    use super::game_server::SESSION_KEY;
+    use bevy_snake::game_server::SESSION_KEY;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
@@ -518,9 +518,6 @@ mod lobby_service {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-mod game_server;
-
-#[cfg(not(target_arch = "wasm32"))]
 fn main() {
     use bevy::prelude::*;
     use log::{error, info};
@@ -610,7 +607,7 @@ fn main() {
                 std::time::Duration::from_secs_f64(1.0 / 240.0),
             )),
         )
-        .add_plugins(game_server::GameServerPlugin {
+        .add_plugins(bevy_snake::game_server::GameServerPlugin {
             bind: game_addr,
         })
         .run();
