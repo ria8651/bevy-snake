@@ -75,10 +75,7 @@ fn drive_state(
         (ClientState::WaitingForOpponent, ConnectStage::Playing) => {
             next.set(ClientState::Playing);
         }
-        (ClientState::Playing, stage)
-            if !matches!(stage, ConnectStage::Playing)
-                && !matches!(stage, ConnectStage::AwaitingWelcome) =>
-        {
+        (ClientState::Playing, stage) if !matches!(stage, ConnectStage::Playing) => {
             let dest = if current.id.is_some() {
                 ClientState::Finished
             } else {

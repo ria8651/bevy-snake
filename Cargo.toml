@@ -51,15 +51,26 @@ uuid = { version = "1.4", features = ["serde"] }
 # wasm-only: read window.location to derive same-origin WS URLs at runtime
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-sys = { version = "0.3", features = ["Window", "Location"] }
+# Lightyear's netcode pulls chacha20poly1305 -> crypto-common -> rand_core 0.6
+# -> getrandom 0.2, which refuses to compile for wasm32-unknown-unknown
+# unless its `js` feature is enabled. We don't use getrandom 0.2 directly;
+# this dep exists only to activate that feature globally on wasm builds.
+# (The top-level `getrandom = "0.3"` dep plays the same role for the 0.3
+# copy that rand 0.9 pulls in, whose wasm feature is named `wasm_js`.)
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 
 # server only dependencies, don't work on wasm
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["ws"] }
-tower-http = { version = "0.6", features = ["fs"] }
+tower-http = { version = "0.6", features = ["fs", "set-header"] }
 colog = "1.3"
 nanoid = "0.4"
 futures-util = "0.3"
+# Outgoing WS client side of the /game reverse-proxy. The aeronet_websocket
+# server downstream of the proxy uses 0.26.2 internally; this dep is the
+# *client* end and doesn't need to match — they're independent.
+tokio-tungstenite = "0.29"
 
 [profile.release]
 debug = true

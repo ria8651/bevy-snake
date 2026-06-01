@@ -114,8 +114,6 @@ pub enum ConnectStage {
     LobbyConnected,
     /// Game-server credentials received from lobby; opening Lightyear link.
     ConnectingToGameServer,
-    /// Link open, waiting on Welcome.
-    AwaitingWelcome,
     /// Connected to the game server and playing.
     Playing,
 }
@@ -169,7 +167,11 @@ impl Plugin for NetPlugin {
         .init_resource::<NetStatus>()
         .init_resource::<SessionIdentity>()
         .init_resource::<TickInbox>()
-        .add_systems(OnEnter(ClientState::WaitingForOpponent), open_session)
+        .add_systems(OnEnter(ClientState::WaitingForOpponent), enter_waiting)
+        .add_systems(
+            Update,
+            connect_to_game_server.run_if(bevy::ecs::schedule::common_conditions::resource_added::<PendingSession>),
+        )
         .add_systems(OnExit(ClientState::Playing), close_session)
         .add_systems(OnEnter(ClientState::Browsing), reset_to_browsing_stage)
         .add_systems(
@@ -215,62 +217,73 @@ fn same_origin_ws_url(path: &str) -> Option<String> {
     Some(format!("{}://{}{}", scheme, host, path))
 }
 
-/// Enter WaitingForOpponent: spin up a Lightyear client against the lobby's
-/// game server. Solo runs an in-process server (see `solo_server` module),
-/// connecting via the same Lightyear client.
-fn open_session(
-    mut commands: Commands,
+/// `OnEnter(WaitingForOpponent)` — reset per-session client state. Does
+/// **not** open the Lightyear link: credentials arrive asynchronously via
+/// `ServerMsg::GameSessionReady`, which inserts a `PendingSession` resource
+/// and triggers [`connect_to_game_server`].
+fn enter_waiting(
     mut settings: ResMut<GameSettings>,
     mut board: ResMut<Board>,
     mut queues: ResMut<InputQueues>,
-    mut status: ResMut<NetStatus>,
     mut identity: ResMut<SessionIdentity>,
     mut inbox: ResMut<TickInbox>,
     current: Res<CurrentLobby>,
-    pending: Option<Res<PendingSession>>,
 ) {
     *identity = SessionIdentity::default();
     inbox.queue.clear();
-
     if current.role == Role::Solo {
-        // For now treat solo as "not yet wired" — fall through to needing
-        // a session. The host server runs in-process for solo.
+        // TODO: spawn embedded server App for solo mode. Until then, Solo
+        // just sits in WaitingForOpponent with no network and no Welcome.
         settings.board.players = PlayerCount::One;
         *board = Board::new(settings.board);
         *queues = InputQueues(vec![Vec::new(); 1]);
-        status.stage = ConnectStage::ConnectingToGameServer;
-        info!("solo session — server runs in-process");
-        // TODO: spawn embedded server App for solo mode.
+        info!("solo session — embedded server not yet wired");
         return;
     }
-
-    let Some(pending) = pending.as_deref() else {
-        warn!("open_session entered without PendingSession credentials");
-        status.stage = ConnectStage::ConnectingToGameServer;
-        return;
-    };
-    let creds = pending.creds.clone();
+    // Network roles: wait for GameSessionReady → PendingSession.
     settings.board.players = PlayerCount::One;
     *board = Board::new(settings.board);
     *queues = InputQueues(vec![Vec::new(); 1]);
+}
 
-    let endpoint = creds.endpoint.clone();
+/// Runs once when `PendingSession` is inserted. Spawns the Lightyear client
+/// link and triggers Connect. Fires for hosts after Start, and for joiners
+/// as soon as they Join (the lobby server emits `GameSessionReady` for both).
+fn connect_to_game_server(
+    mut commands: Commands,
+    mut status: ResMut<NetStatus>,
+    pending: Res<PendingSession>,
+) {
+    let creds = pending.creds.clone();
+    // `endpoint` may be an absolute URL or a path like `/game` (resolved
+    // against the page origin so the deploy stays single-port).
+    let connect_url = if creds.endpoint.starts_with("ws://") || creds.endpoint.starts_with("wss://")
+    {
+        creds.endpoint.clone()
+    } else {
+        server_url(&creds.endpoint)
+    };
     info!(
-        "connecting Lightyear client to {} (client_id={})",
-        endpoint, creds.client_id
+        "connecting Lightyear client to {} (client_id={}, netcode_server={})",
+        connect_url, creds.client_id, creds.netcode_server_addr
     );
     status.stage = ConnectStage::ConnectingToGameServer;
 
     let auth = Authentication::Manual {
-        server_addr: parse_ws_addr(&endpoint),
+        server_addr: creds.netcode_server_addr,
         client_id: creds.client_id,
         private_key: creds.private_key,
         protocol_id: creds.protocol_id,
     };
-    let target = WebSocketTarget::Url(endpoint);
-    // Dev: don't validate certs on the WebSocket TLS handshake — the
-    // server's self-signed cert wouldn't validate against any root CA.
+    let target = WebSocketTarget::Url(connect_url);
+    // On native, skip cert validation so dev against the server's self-signed
+    // cert works. On wasm `ClientConfig` is a unit-struct stub — the browser
+    // owns TLS and will reject self-signed certs regardless, so prod needs a
+    // real cert and dev uses ws://.
+    #[cfg(not(target_family = "wasm"))]
     let ws_config = WsClientConfig::builder().with_no_cert_validation();
+    #[cfg(target_family = "wasm")]
+    let ws_config = WsClientConfig::default();
 
     let netcode = match NetcodeClient::new(auth, NetcodeConfig::default()) {
         Ok(c) => c,
@@ -289,23 +302,7 @@ fn open_session(
             Name::from("GameClient"),
         ))
         .id();
-    let _ = entity;
     commands.trigger(Connect { entity });
-}
-
-/// Best-effort: parse `ws[s]://host:port` into a SocketAddr used by the
-/// Lightyear netcode `server_addr` field. We don't actually open a UDP
-/// socket here — Lightyear's WebSocket IO does the connecting — but
-/// netcode still wants a SocketAddr in its auth token.
-fn parse_ws_addr(url: &str) -> std::net::SocketAddr {
-    let stripped = url
-        .strip_prefix("wss://")
-        .or_else(|| url.strip_prefix("ws://"))
-        .unwrap_or(url);
-    let host_port = stripped.split('/').next().unwrap_or(stripped);
-    host_port
-        .parse()
-        .unwrap_or_else(|_| "127.0.0.1:0".parse().unwrap())
 }
 
 fn close_session(

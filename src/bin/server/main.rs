@@ -29,8 +29,12 @@ mod lobby_service {
     };
     use bevy_snake::net_proto::PROTOCOL_ID;
     use log::{debug, info, warn};
-    use rand::RngCore;
     use std::collections::HashMap;
+    // v1 runs a single global game session, so every lobby's credentials must
+    // sign auth tokens with the same private key the game server is configured
+    // with. Multi-session isolation is a follow-up; when it lands, each lobby
+    // will allocate its own key and pass it into a per-lobby NetcodeServer.
+    use super::game_server::SESSION_KEY;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
@@ -41,10 +45,19 @@ mod lobby_service {
     const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
     const FINISHED_GRACE: Duration = Duration::from_secs(5);
 
-    /// Where to send game-server credentials. Set by main() based on env vars.
+    /// Where to send game-server credentials.
+    ///
+    /// `connect_endpoint` is what the client uses to open the WebSocket —
+    /// either an absolute `ws[s]://` URL or a path like `/game` (resolved
+    /// against the page origin). `netcode_server_addr` is what goes into the
+    /// netcode auth token; it must match the game server's `LocalAddr`.
+    /// These differ when the WebSocket is reverse-proxied: the browser hits
+    /// the front-door path on the HTTP port, but netcode validates against
+    /// the backend's bind addr behind the proxy.
     #[derive(Clone)]
     pub struct GameEndpoint {
-        pub url: String,
+        pub connect_endpoint: String,
+        pub netcode_server_addr: std::net::SocketAddr,
     }
 
     struct MemberInfo {
@@ -57,8 +70,6 @@ mod lobby_service {
         lobby: Lobby,
         host: ConnId,
         members: HashMap<ConnId, MemberInfo>,
-        /// 32-byte shared key, allocated on first StartLobby.
-        session_key: Option<[u8; 32]>,
         next_client_id: u64,
     }
 
@@ -88,7 +99,80 @@ mod lobby_service {
         tokio::spawn(async move { gc_loop(gc_state).await });
         Router::new()
             .route("/lobbies", get(ws_handler))
+            .route("/game", get(game_proxy))
             .with_state(state)
+    }
+
+    /// Same-origin reverse proxy: upgrades the browser's WebSocket, opens a
+    /// matching WebSocket to the Lightyear backend at
+    /// `state.endpoint.netcode_server_addr`, and shuttles frames in both
+    /// directions until either end closes. Lets the deployment expose a
+    /// single public port even though Lightyear runs its own listener.
+    async fn game_proxy(
+        ws: WebSocketUpgrade,
+        State(state): State<Arc<AppState>>,
+    ) -> impl IntoResponse {
+        let backend = state.endpoint.netcode_server_addr;
+        ws.on_upgrade(move |frontend| async move {
+            proxy_session(frontend, backend).await;
+        })
+    }
+
+    async fn proxy_session(frontend: WebSocket, backend_addr: std::net::SocketAddr) {
+        use axum::extract::ws::Message as FrontMsg;
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message as BackMsg;
+
+        let url = format!("ws://{}/", backend_addr);
+        let backend = match tokio_tungstenite::connect_async(&url).await {
+            Ok((ws, _)) => ws,
+            Err(e) => {
+                warn!("game proxy: backend connect to {} failed: {}", url, e);
+                return;
+            }
+        };
+        let (mut b_tx, mut b_rx) = backend.split();
+        let (mut f_tx, mut f_rx) = frontend.split();
+
+        let client_to_backend = async move {
+            while let Some(Ok(msg)) = f_rx.next().await {
+                let out = match msg {
+                    FrontMsg::Text(t) => BackMsg::Text(t.as_str().into()),
+                    FrontMsg::Binary(b) => BackMsg::Binary(b.to_vec().into()),
+                    FrontMsg::Ping(b) => BackMsg::Ping(b.to_vec().into()),
+                    FrontMsg::Pong(b) => BackMsg::Pong(b.to_vec().into()),
+                    FrontMsg::Close(_) => {
+                        let _ = b_tx.send(BackMsg::Close(None)).await;
+                        break;
+                    }
+                };
+                if b_tx.send(out).await.is_err() {
+                    break;
+                }
+            }
+        };
+        let backend_to_client = async move {
+            while let Some(Ok(msg)) = b_rx.next().await {
+                let out = match msg {
+                    BackMsg::Text(t) => FrontMsg::Text(t.as_str().to_string().into()),
+                    BackMsg::Binary(b) => FrontMsg::Binary(b.to_vec().into()),
+                    BackMsg::Ping(b) => FrontMsg::Ping(b.to_vec().into()),
+                    BackMsg::Pong(b) => FrontMsg::Pong(b.to_vec().into()),
+                    BackMsg::Close(_) => {
+                        let _ = f_tx.send(FrontMsg::Close(None)).await;
+                        break;
+                    }
+                    BackMsg::Frame(_) => continue,
+                };
+                if f_tx.send(out).await.is_err() {
+                    break;
+                }
+            }
+        };
+        tokio::select! {
+            _ = client_to_backend => {}
+            _ = backend_to_client => {}
+        }
     }
 
     async fn ws_handler(
@@ -193,7 +277,6 @@ mod lobby_service {
                         },
                         host: conn_id,
                         members,
-                        session_key: None,
                         next_client_id: 1,
                     },
                 );
@@ -242,10 +325,9 @@ mod lobby_service {
                         record.lobby.spectators_present.saturating_add(1);
                 }
                 let in_progress = record.lobby.state != LobbyState::Waiting;
-                let session_key = record.session_key;
                 let id_for_send = id.clone();
                 info!("conn {} joined lobby {}", conn_id, id);
-                if in_progress && session_key.is_some() {
+                if in_progress {
                     // Allocate a client_id for the spectator and hand them
                     // the existing session's credentials so they can connect.
                     record.next_client_id += 1;
@@ -254,9 +336,10 @@ mod lobby_service {
                         member.client_id = Some(client_id);
                     }
                     let creds = GameSessionCreds {
-                        endpoint: state.endpoint.url.clone(),
+                        endpoint: state.endpoint.connect_endpoint.clone(),
+                        netcode_server_addr: state.endpoint.netcode_server_addr,
                         client_id,
-                        private_key: session_key.unwrap(),
+                        private_key: SESSION_KEY,
                         protocol_id: PROTOCOL_ID,
                     };
                     drop(lobbies);
@@ -283,14 +366,6 @@ mod lobby_service {
                     });
                     return;
                 }
-                // Allocate the session key on first start, then reuse for
-                // subsequent rounds.
-                if record.session_key.is_none() {
-                    let mut key = [0u8; 32];
-                    rand::rng().fill_bytes(&mut key);
-                    record.session_key = Some(key);
-                }
-                let key = record.session_key.unwrap();
                 record.lobby.state = LobbyState::InProgress;
                 // Allocate client_ids for each member who doesn't have one.
                 let mut handouts: Vec<(ConnId, GameSessionCreds)> = Vec::new();
@@ -301,9 +376,10 @@ mod lobby_service {
                         member.client_id = Some(next_id);
                     }
                     let creds = GameSessionCreds {
-                        endpoint: state.endpoint.url.clone(),
+                        endpoint: state.endpoint.connect_endpoint.clone(),
+                        netcode_server_addr: state.endpoint.netcode_server_addr,
                         client_id: member.client_id.unwrap(),
-                        private_key: key,
+                        private_key: SESSION_KEY,
                         protocol_id: PROTOCOL_ID,
                     };
                     handouts.push((*cid, creds));
@@ -458,21 +534,25 @@ fn main() {
         .unwrap_or_else(|_| "0.0.0.0:1234".to_string())
         .parse()
         .expect("HTTP_ADDR must be a valid socket address");
+    // Lightyear's WebSocket listener. Default to localhost-only so it isn't
+    // exposed directly — the HTTP server on `http_addr` reverse-proxies
+    // `/game` to it and that's the only public-facing entry point.
     let game_addr: SocketAddr = env::var("GAME_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:1235".to_string())
+        .unwrap_or_else(|_| "127.0.0.1:1235".to_string())
         .parse()
         .expect("GAME_ADDR must be a valid socket address");
-    // The endpoint URL we advertise to clients. Native dev uses ws://,
-    // production behind TLS overrides with `wss://` via env.
-    // Lightyear's WebSocket server uses TLS (self-signed cert), so the
-    // public URL is wss://. Override with GAME_PUBLIC_URL behind a TLS
-    // terminator.
-    let endpoint_url = env::var("GAME_PUBLIC_URL")
-        .unwrap_or_else(|_| format!("wss://{}", game_addr));
+    // What we advertise to clients. Default is a same-origin path; the
+    // browser ends up calling `ws://<page-host>/game`, axum upgrades and
+    // proxies to the Lightyear backend on `game_addr`. Operators can override
+    // (e.g. `wss://other.host/game`) when the game server is on a different
+    // hostname than the HTTP server.
+    let connect_endpoint =
+        env::var("GAME_PUBLIC_URL").unwrap_or_else(|_| "/game".to_string());
 
     // Run axum + lobby in a tokio runtime on a dedicated thread.
     let lobby_endpoint = lobby_service::GameEndpoint {
-        url: endpoint_url.clone(),
+        connect_endpoint: connect_endpoint.clone(),
+        netcode_server_addr: game_addr,
     };
     let _tokio_thread = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -481,11 +561,21 @@ fn main() {
             .expect("tokio runtime");
         rt.block_on(async move {
             use axum::Router;
+            use axum::http::{HeaderValue, header};
             use tower_http::services::ServeDir;
+            use tower_http::set_header::SetResponseHeaderLayer;
             let lobby_state = lobby_service::AppState::new(lobby_endpoint);
+            // Dev: tell browsers not to cache assets. The 67 MB wasm bundle
+            // gets aggressively cached by Firefox, so rebuilds appear stale
+            // until you manually disable cache. Override at deploy time.
+            let no_cache = SetResponseHeaderLayer::overriding(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+            );
             let app: Router = Router::new()
                 .merge(lobby_service::router(lobby_state))
-                .fallback_service(ServeDir::new("web"));
+                .fallback_service(ServeDir::new("web"))
+                .layer(no_cache);
             let listener = match tokio::net::TcpListener::bind(http_addr).await {
                 Ok(l) => l,
                 Err(e) => {
@@ -504,8 +594,22 @@ fn main() {
     info!("game server (Lightyear) on ws://{}", game_addr);
 
     // Run the Bevy + Lightyear game server.
+    //
+    // Pace the outer schedule so it doesn't busy-spin at 100% CPU. Without
+    // this, `MinimalPlugins`' `ScheduleRunnerPlugin` defaults to
+    // `RunMode::Loop { wait: None }`, the global change-tick races past
+    // `MAX_CHANGE_AGE` within seconds, and `check_change_ticks` spams
+    // warnings about Startup / host-server systems that haven't re-run.
+    // Lightyear's authoritative sim runs in `FixedUpdate` at
+    // `SERVER_TICK_HZ`, so the outer loop just needs to drain inputs
+    // faster than that.
+    use bevy::app::ScheduleRunnerPlugin;
     bevy::app::App::new()
-        .add_plugins(bevy::MinimalPlugins)
+        .add_plugins(
+            bevy::MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(
+                std::time::Duration::from_secs_f64(1.0 / 240.0),
+            )),
+        )
         .add_plugins(game_server::GameServerPlugin {
             bind: game_addr,
         })

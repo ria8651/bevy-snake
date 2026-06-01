@@ -809,7 +809,6 @@ fn update_waiting(
         // message is more useful; otherwise the stage detail wins.
         t.0 = match (&status.stage, current.role) {
             (ConnectStage::ConnectingToGameServer, _) => "Connecting to game server…".into(),
-            (ConnectStage::AwaitingWelcome, _) => "Synchronizing…".into(),
             (_, Role::Host) => {
                 if count < 2 {
                     "Hosting — waiting for someone to join".into()

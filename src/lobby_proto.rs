@@ -9,6 +9,7 @@
 
 use crate::settings::GameSettings;
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 
 /// Short URL-safe identifier.
 pub type LobbyId = String;
@@ -41,9 +42,16 @@ pub const MAX_PLAYERS: u8 = 4;
 /// lobby service hands these to each member when the host hits Start.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GameSessionCreds {
-    /// WebSocket endpoint (`ws://host:port` or `wss://host:port`) of the
-    /// Lightyear server for this lobby's session.
+    /// Where to connect the WebSocket. Either an absolute URL
+    /// (`ws://host:port/path` / `wss://...`) or a path starting with `/`,
+    /// in which case the client resolves it relative to the page origin.
+    /// Same-origin path keeps the deploy single-port.
     pub endpoint: String,
+    /// SocketAddr the netcode auth token is bound to — must match the game
+    /// server's `LocalAddr`. Differs from the connect URL when the WS is
+    /// proxied: client connects via the front door (e.g. `/game` on the
+    /// HTTP port) but netcode validates against the backend's bind addr.
+    pub netcode_server_addr: SocketAddr,
     /// Netcode client id — unique within the session.
     pub client_id: u64,
     /// Shared 32-byte netcode private key for this session.

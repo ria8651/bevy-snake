@@ -15,7 +15,7 @@ use bevy_snake::net_proto::{
 use bevy_snake::settings::GameSettings;
 use lightyear::prelude::*;
 use lightyear::prelude::server::*;
-use lightyear::websocket::server::{Identity, WebSocketServerIo};
+use lightyear::websocket::server::WebSocketServerIo;
 use lightyear::websocket::prelude::server::ServerConfig;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -84,11 +84,13 @@ fn start_server(
     bind: Res<BindAddr>,
     mut session: ResMut<SessionState>,
 ) {
-    let sans: Vec<String> = vec!["localhost".to_string(), "127.0.0.1".to_string()];
-    let identity = Identity::self_signed(sans).expect("self_signed");
+    // Plain ws:// (no in-process TLS). Browsers won't accept the self-signed
+    // cert we used to mint here, so for dev the operator visits ws:// directly
+    // and for prod TLS is terminated by a reverse proxy that forwards to this
+    // plain ws:// listener.
     let cfg = ServerConfig::builder()
         .with_bind_address(bind.0)
-        .with_identity(identity);
+        .with_no_encryption();
 
     let netcode = NetcodeServer::new(NetcodeConfig {
         protocol_id: PROTOCOL_ID,
